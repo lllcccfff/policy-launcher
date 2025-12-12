@@ -8,16 +8,19 @@ import atexit
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 gaussiandrive_path = os.path.join(project_root, "simulator/GaussianDrive")
 easydrive_path = os.path.join(project_root, "simulator/EasyDrive")
+streetgs_path = os.path.join(project_root, "simulator/street_gaussians")
 
 sys.path.insert(0, project_root)
 sys.path.insert(0, gaussiandrive_path)
 sys.path.insert(0, easydrive_path)
+sys.path.insert(0, streetgs_path)
 
 os.chdir(gaussiandrive_path)
 
 from rl_framework.train_ppo import train, evaluate, TrainingConfig
 from metadrive.envs.scenario_env import ScenarioEnv
 from easydrive.models.scenes.simulator_interface import SimulatorInterface
+# from lib.integration.simulator_interface import SimulatorInterface
 import os
 
 _TEMP_SCENE_DIRS = []
@@ -30,7 +33,7 @@ def _cleanup_temp_scene_dirs():
 atexit.register(_cleanup_temp_scene_dirs)
 
 def create_base_env():
-    scene_path = os.environ.get("SCENE_CONFIG_DIR", "./configs/exps/sim_test")
+    scene_path = os.environ.get("SCENE_CONFIG_DIR", "./configs/exps/sim/scene_train")
     scene_dir = scene_path
     if os.path.isfile(scene_path):
         tmp_dir = tempfile.mkdtemp(prefix="scene_cfg_")
@@ -59,8 +62,8 @@ def main():
     config = TrainingConfig()
     
     # PPO setting
-    config.total_timesteps = 40_000      
-    config.save_freq = 10_000             
+    config.total_timesteps = 100_000      
+    config.save_freq = 25_000             
     config.eval_freq = 20_000             
     config.eval_episodes = 3             
 
@@ -102,9 +105,13 @@ def main():
     print("  - You can use Tensorboard to monitor the training progress:")
     print(f"    tensorboard --logdir={config.tensorboard_log}")
     print("")
+
+    # model_path = os.path.join(config.checkpoint_dir, "cirr4_train_model.zip")
+    # print(f"\n模型路径: {model_path}")
+    model_path = None
     
     try:
-        train(base_env_fn, config, eval_env_fn=eval_env_fn)
+        train(base_env_fn, config, eval_env_fn=eval_env_fn, model_path=model_path)
     except KeyboardInterrupt:
         print("\nTraining interrupted by user")
     except Exception as e:
@@ -128,7 +135,7 @@ def run_evaluation():
         "best_model/best_model.zip"
     )
 
-    model_path = os.path.join(config.checkpoint_dir, "street_gs_model.zip")
+    model_path = os.path.join(config.checkpoint_dir, "cirr4_train_model.zip")
     # model_path = os.path.join(config.checkpoint_dir, "ppo_uniad_100000_steps.zip")
     
     if not os.path.exists(model_path):

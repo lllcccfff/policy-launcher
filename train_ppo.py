@@ -619,7 +619,7 @@ def train(
         print("训练完成！")
         print("="*60 + "\n")
 
-        final_model_path = os.path.join(config.checkpoint_dir, 'critic_warmup_model')
+        final_model_path = os.path.join(config.checkpoint_dir, 'critic_warmup_model_1e5')
         model.save(final_model_path)
         print(f"✓ 最终模型已保存: {final_model_path}")
 

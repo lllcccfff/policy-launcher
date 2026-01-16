@@ -33,7 +33,29 @@ def _cleanup_temp_scene_dirs():
 atexit.register(_cleanup_temp_scene_dirs)
 
 def create_base_env():
-    scene_path = os.environ.get("SCENE_CONFIG_DIR", "./configs/exps/sim/scene_train")
+    scene_path = os.environ.get("SCENE_CONFIG_DIR", "./configs/exps/sim/cirr_4_train")
+    scene_dir = scene_path
+    if os.path.isfile(scene_path):
+        tmp_dir = tempfile.mkdtemp(prefix="scene_cfg_")
+        shutil.copy(scene_path, os.path.join(tmp_dir, os.path.basename(scene_path)))
+        _TEMP_SCENE_DIRS.append(tmp_dir)
+        scene_dir = tmp_dir
+
+    env_cfg = {
+        "scene_config_directory": scene_dir,
+    }
+    additional_cfg = {
+        'image_observation': True,
+    }
+    env_cfg.update(additional_cfg)
+
+    model = SimulatorInterface()
+    env = ScenarioEnv(model, env_cfg)
+    
+    return env
+
+def create_eval_env():
+    scene_path = os.environ.get("SCENE_CONFIG_DIR", "./configs/exps/sim_test")
     scene_dir = scene_path
     if os.path.isfile(scene_path):
         tmp_dir = tempfile.mkdtemp(prefix="scene_cfg_")
@@ -62,8 +84,8 @@ def main():
     config = TrainingConfig()
     
     # PPO setting
-    config.total_timesteps = 100_000      
-    config.save_freq = 25_000             
+    config.total_timesteps = 50_000      
+    config.save_freq = 10_000             
     config.eval_freq = 20_000             
     config.eval_episodes = 3             
 
@@ -74,27 +96,12 @@ def main():
     config.with_adapter = True 
     config.pretrained_planning_weights = os.path.join(project_root, "rl_framework/actor_ckpts/planning_modules.pth")
     config.normalize_obs = False
-    config.normalize_reward = True
+    config.normalize_reward = False
     config.training_phase = int(os.environ.get("UNIAD_TRAIN_PHASE", 0))
     config.apply_phase_defaults()
 
-    print("\nConfiguration information:")
-    print(f"  Device: {config.device}")
-    print(f"  Training Phase: {config.training_phase}")
-    print(f"  Total steps: {config.total_timesteps:,}")
-    schedule_str = ", ".join(f"phase{p}:{ratio:.2f}" for p, ratio in config.phase_schedule)
-    print(f"  Phase schedule: {schedule_str}")
-    print(f"  Rollout steps: {config.n_steps}, Batch size: {config.batch_size}, Epochs: {config.n_epochs}")
-    print(f"  Clip range: {config.clip_range}, Target KL: {config.target_kl}")
-    print(f"  Actor LR: {config.actor_lr}, Critic LR: {config.critic_lr}")
-    print(f"  Output directory: {config.output_dir}")
-    print(f"  Tensorboard: {config.tensorboard_log}")
-
     base_env_fn = create_base_env
-
-    print("\nCreating simulation environment...")
-
-    eval_env_fn = base_env_fn
+    eval_env_fn = None
 
     print("\n" + "="*70)
     print(" Start training")
@@ -106,9 +113,9 @@ def main():
     print(f"    tensorboard --logdir={config.tensorboard_log}")
     print("")
 
-    # model_path = os.path.join(config.checkpoint_dir, "cirr4_train_model.zip")
-    # print(f"\n模型路径: {model_path}")
-    model_path = None
+    model_path = os.path.join(config.checkpoint_dir, "critic_warmup_20000")
+    print(f"\n模型路径: {model_path}")
+    # model_path = None
     
     try:
         train(base_env_fn, config, eval_env_fn=eval_env_fn, model_path=model_path)
@@ -151,7 +158,6 @@ def run_evaluation():
 
     print("\n开始评估...")
     evaluate(model_path, create_base_env, config, n_episodes=1)
-
 
 if __name__ == "__main__":
     import argparse

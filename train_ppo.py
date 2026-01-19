@@ -146,7 +146,6 @@ class UniADPPO(PPO):
                 accum_count += 1
 
                 if accum_count % grad_accum_steps == 0:
-                    breakpoint()
                     if not pre_step_checked:
                         max_diff = torch.max(torch.abs(log_prob - rollout_data.old_log_prob)).item()
                         print(f"[PPO] pre-step |log_prob-old_log_prob|_max={max_diff:.3e}")
@@ -299,7 +298,9 @@ class TrainingConfig:
         self.eval_freq = 10_000           # 评估频率
         self.eval_episodes = 5            # 评估 episode 数量
         self.verbose = 1                  # 日志详细程度
-        
+        self.episode_info_print_every = 1  # 每 N 个 episode 打印一次诊断
+        self.episode_info_log_to_tb = True # 是否写入 TensorBoard
+
         # ============ Policy 配置 ============
         self.with_adapter = True          # 是否使用 BEV adapter
         self.pretrained_planning_weights = None  # 预训练权重路径（可选）
@@ -331,7 +332,7 @@ class TrainingConfig:
                 target_kl=0.01,
                 actor_lr=0,
                 critic_lr=1e-4,
-                log_std_bounds=(-4.5, -0.3),
+                log_std_bounds=(-4.5, -0.5),
                 kl_reg_coef=0.0,
                 bc_reg_coef=0.0,
                 grad_accum_steps=8,
@@ -345,17 +346,17 @@ class TrainingConfig:
             1: dict(
                 n_steps=1024,
                 batch_size=32,
-                n_epochs=2,
-                clip_range=0.02,
+                n_epochs=3,
+                clip_range=0.05,
                 ent_coef=0.001,
                 vf_coef=0.4,
-                target_kl=0.01,
-                actor_lr=2e-6,
+                target_kl=0.02,
+                actor_lr=5e-6,
                 critic_lr=1e-4,
-                log_std_bounds=(-4.2, -0.25),
+                log_std_bounds=(-4.2, -0.5),
                 kl_reg_coef=0.0,
-                bc_reg_coef=0.3,
-                grad_accum_steps=16,
+                bc_reg_coef=10,
+                grad_accum_steps=8,
                 phase_behavior=dict(
                     train_action=True,
                     train_lora=True,
@@ -366,17 +367,17 @@ class TrainingConfig:
             2: dict(
                 n_steps=960,
                 batch_size=24,
-                n_epochs=2,
-                clip_range=0.02,
+                n_epochs=3,
+                clip_range=0.05,
                 ent_coef=0.001,
                 vf_coef=0.35,
-                target_kl=0.015,
+                target_kl=0.03,
                 actor_lr=2.5e-6,
                 critic_lr=8e-5,
-                log_std_bounds=(-4.0, -0.18),
+                log_std_bounds=(-4.0, -0.5),
                 kl_reg_coef=0.0,
-                bc_reg_coef=0.2,
-                grad_accum_steps=20,
+                bc_reg_coef=0.5,
+                grad_accum_steps=10,
                 phase_behavior=dict(
                     train_action=True,
                     train_lora=True,
@@ -387,8 +388,8 @@ class TrainingConfig:
         }
 
         self.phase_schedule = [
-            # (0, 0.05),
-            (1, 0.6),
+            (0, 0.05),
+            (1, 0.55),
             (2, 0.4),
         ]
 
@@ -433,6 +434,80 @@ class TensorboardCallback(BaseCallback):
         return True
 
 
+class EpisodeInfoPrinterCallback(BaseCallback):
+    """
+    打印并记录环境在 info['episode']['env'] 中提供的诊断统计
+    """
+
+    def __init__(
+        self,
+        print_every: int = 1,
+        log_to_tb: bool = True,
+        keys_to_display: Optional[List[str]] = None,
+        verbose: int = 0,
+    ):
+        super().__init__(verbose)
+        self.print_every = max(1, int(print_every))
+        self.log_to_tb = bool(log_to_tb)
+        self.keys_to_display = keys_to_display or [
+            "sum/progress",
+            "sum/ttc",
+            "sum/position",
+            "sum/heading",
+            "sum/collision",
+            "count/stall_steps",
+            "count/ttc_warning_steps",
+        ]
+        self.episode_counter = 0
+
+    def _on_step(self) -> bool:
+        infos = self.locals.get("infos")
+        if not infos:
+            return True
+        for info in infos:
+            if not isinstance(info, dict):
+                continue
+            episode_info = info.get("episode")
+            if not isinstance(episode_info, dict):
+                continue
+            env_stats = episode_info.get("env")
+            if env_stats is None and isinstance(info.get("env"), dict):
+                env_stats = info["env"]
+                episode_info["env"] = env_stats
+            if not isinstance(env_stats, dict):
+                continue
+            self.episode_counter += 1
+            self._log_env_stats(env_stats)
+            if self.episode_counter % self.print_every == 0:
+                reward_str = self._format_value(episode_info.get("r"))
+                length_str = self._format_value(episode_info.get("l"))
+                selected = []
+                for key in self.keys_to_display:
+                    if key in env_stats:
+                        selected.append(f"{key}={self._format_value(env_stats[key])}")
+                detail = " ".join(selected)
+                print(f"[Episode {self.episode_counter}] r={reward_str} l={length_str} {detail}".strip())
+        return True
+
+    def _log_env_stats(self, env_stats: Dict[str, Any]) -> None:
+        if not self.log_to_tb or self.logger is None:
+            return
+        for key, value in env_stats.items():
+            if isinstance(value, numbers.Number):
+                tag = key.replace("/", "_")
+                self.logger.record(f"episode/env/{tag}", float(value))
+
+    @staticmethod
+    def _format_value(value: Any) -> str:
+        if isinstance(value, numbers.Integral):
+            return str(int(value))
+        if isinstance(value, numbers.Number):
+            return f"{float(value):.3f}"
+        if value is None:
+            return "-"
+        return str(value)
+
+
 def create_env(base_env, uniad_model, dataparser, config: TrainingConfig):
     """
     创建并包装环境
@@ -473,7 +548,7 @@ def make_vec_env(
         base_env = base_env_fn()
         return create_env(base_env, uniad_model, dataparser, config)
     env = DummyVecEnv([_init])
-    env = VecMonitor(env)
+    env = VecMonitor(env, info_keywords=("env",))
     if normalize and (config.normalize_obs or config.normalize_reward):
         env = VecNormalize(
             env,
@@ -678,6 +753,13 @@ def setup_callbacks(config: TrainingConfig, eval_env=None):
     tensorboard_callback = TensorboardCallback()
     callbacks.append(tensorboard_callback)
     print("✓ Tensorboard 日志已启用")
+
+    episode_info_callback = EpisodeInfoPrinterCallback(
+        print_every=getattr(config, "episode_info_print_every", 1),
+        log_to_tb=getattr(config, "episode_info_log_to_tb", True),
+    )
+    callbacks.append(episode_info_callback)
+    print(f"✓ Episode 诊断打印: 每 {getattr(config, 'episode_info_print_every', 1)} 个 episode")
     
     return CallbackList(callbacks)
 
@@ -873,7 +955,7 @@ def train(
         print("训练完成！")
         print("="*60 + "\n")
 
-        final_model_path = os.path.join(config.checkpoint_dir, 'test')
+        final_model_path = os.path.join(config.checkpoint_dir, 'test_one_scene')
         model.save(final_model_path)
         print(f"✓ 最终模型已保存: {final_model_path}")
 

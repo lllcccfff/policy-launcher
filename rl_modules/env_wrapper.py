@@ -6,9 +6,11 @@ import torch
 import os
 import sys
 from pathlib import Path
+from collections import defaultdict
 import cv2
 from scipy.spatial.transform import Rotation as SCR
 from typing import Any, Dict, Tuple, Optional, Callable
+import numbers
 from rl_framework.ilqr.lqr import plan2control
 import colorsys
 import matplotlib.pyplot as plt
@@ -232,11 +234,26 @@ class UniADWrapper(gym.Wrapper):
         })
 
         self.action_space = spaces.Box(
-            low=-5.0,
-            high=5.0,
+            low=-1.0,
+            high=1.0,
             shape=(self.planning_steps * 2,),
             dtype=np.float32
         )
+
+        lateral_bounds = (-0.6, 0.6)
+        longitudinal_bounds = (0.0, 4.0)
+        lat_scale = torch.full((self.planning_steps,), (lateral_bounds[1] - lateral_bounds[0]) * 0.5, dtype=torch.float32)
+        lat_bias = torch.full((self.planning_steps,), (lateral_bounds[1] + lateral_bounds[0]) * 0.5, dtype=torch.float32)
+        lon_scale = torch.full((self.planning_steps,), (longitudinal_bounds[1] - longitudinal_bounds[0]) * 0.5, dtype=torch.float32)
+        lon_bias = torch.full((self.planning_steps,), (longitudinal_bounds[1] + longitudinal_bounds[0]) * 0.5, dtype=torch.float32)
+        lat_min = torch.full((self.planning_steps,), lateral_bounds[0], dtype=torch.float32)
+        lat_max = torch.full((self.planning_steps,), lateral_bounds[1], dtype=torch.float32)
+        lon_min = torch.full((self.planning_steps,), longitudinal_bounds[0], dtype=torch.float32)
+        lon_max = torch.full((self.planning_steps,), longitudinal_bounds[1], dtype=torch.float32)
+        self._action_scale = torch.stack((lat_scale, lon_scale), dim=-1).view(-1)
+        self._action_bias = torch.stack((lat_bias, lon_bias), dim=-1).view(-1)
+        self._action_min = torch.stack((lat_min, lon_min), dim=-1).view(-1)
+        self._action_max = torch.stack((lat_max, lon_max), dim=-1).view(-1)
 
         self.step_count = 0
         self._expert_path_info = None
@@ -246,6 +263,8 @@ class UniADWrapper(gym.Wrapper):
         self.ft_color, self.ft_color_end = self._hsl_gradient_colors((28, 244, 167))
         self.trajectory_start_offset = 0.3
         self.latest_uniad_world_traj: Optional[np.ndarray] = None
+        self._ttc_warn_horizon = self._infer_ttc_warn_horizon()
+        self._reset_episode_stats()
 
     def reset(
         self, 
@@ -253,12 +272,11 @@ class UniADWrapper(gym.Wrapper):
         **kwargs
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """
-        重置环境并处理初始观测
-        
         Returns:
             processed_obs: 处理后的观测，包含 plan_query 和 bev_feat
             info: 环境信息
         """
+        self._reset_episode_stats()
         obs, _ = self.env.reset(seed=seed, **kwargs)
         obs_img, obs_info = obs
         self._expert_path_info = self._extract_expert_path_info()
@@ -281,12 +299,14 @@ class UniADWrapper(gym.Wrapper):
             truncated: 是否截断
             info: 环境信息
         """
-        if isinstance(action, np.ndarray):
-            action = torch.from_numpy(action).float()
-        
-        # Reshape: [planning_steps*2] -> [1, planning_steps, 2]
-        action = action.view(-1, self.planning_steps, 2)
-        action = torch.cumsum(action, dim=1)
+        action = torch.as_tensor(action, dtype=torch.float32)
+        single_action = action.dim() == 1
+        if single_action:
+            action = action.unsqueeze(0)
+
+        physical_action = self._denormalize_action(action)
+        increments = physical_action.reshape(action.shape[0], self.planning_steps, 2)
+        trajectory = torch.cumsum(increments, dim=1)
 
         vehicle = self.env.actor_controller
         plan_info = {
@@ -294,7 +314,7 @@ class UniADWrapper(gym.Wrapper):
             'ego_steer': vehicle.steering * np.deg2rad(vehicle.max_steering)
         }
     
-        acc, steer = traj2control(action[0].cpu().numpy(), plan_info)
+        acc, steer = traj2control(trajectory[0].cpu().numpy(), plan_info)
         control_action = (steer, acc) # control action != acc and steer in info
 
         obs, reward, terminated, truncated, info = self.env.step(control_action)
@@ -305,9 +325,29 @@ class UniADWrapper(gym.Wrapper):
 
         if info is None:
             info = {}
+        self._update_episode_stats(info, terminated, truncated)
         info.update(self._build_metric_payload(obs_info))
 
         return processed_obs, reward, terminated, truncated, info
+
+    @property
+    def action_scale(self) -> torch.Tensor:
+        """Expose env action scale for policy use."""
+        return self._action_scale
+
+    @property
+    def action_bias(self) -> torch.Tensor:
+        """Expose env action bias for policy use."""
+        return self._action_bias
+    
+    def _denormalize_action(self, action: torch.Tensor) -> torch.Tensor:
+        scale = self._action_scale.to(action.device)
+        bias = self._action_bias.to(action.device)
+        min_val = self._action_min.to(action.device)
+        max_val = self._action_max.to(action.device)
+        normalized = torch.clamp(action, -1.0, 1.0)
+        physical = normalized * scale + bias
+        return torch.max(torch.min(physical, max_val), min_val)
     
     def _process_observation(
         self, 
@@ -436,6 +476,70 @@ class UniADWrapper(gym.Wrapper):
         if self._expert_path_info is not None:
             payload['expert_path'] = self._expert_path_info
         return payload
+    
+    def _update_episode_stats(self, info: Dict[str, Any], terminated: bool, truncated: bool) -> None:
+        if not isinstance(info, dict):
+            return
+        reward_components = info.get("reward_components") or {}
+        for name, value in reward_components.items():
+            if isinstance(value, numbers.Number):
+                self._episode_reward_sums[name] += float(value)
+        diag = info.get("diag") or {}
+        stalled_flag = diag.get("stalled", info.get("stalled", False))
+        if isinstance(stalled_flag, (bool, numbers.Number)) and bool(stalled_flag):
+            self._episode_counts["stall_steps"] += 1
+        ttc_value = diag.get("ttc")
+        if isinstance(ttc_value, numbers.Number) and ttc_value <= self._ttc_warn_horizon:
+            self._episode_counts["ttc_warning_steps"] += 1
+        collision_flag = info.get("collision")
+        if isinstance(collision_flag, numbers.Number) and collision_flag >= 1:
+            self._episode_counts["collision_happened"] = 1
+        self._episode_len += 1
+        if terminated or truncated:
+            summary = self._build_episode_summary()
+            if summary:
+                env_summary = info.get("env")
+                if not isinstance(env_summary, dict):
+                    env_summary = {}
+                env_summary.update(summary)
+                info["env"] = env_summary
+                episode_info = info.setdefault("episode", {})
+                if isinstance(episode_info, dict):
+                    episode_env = episode_info.get("env")
+                    if not isinstance(episode_env, dict):
+                        episode_env = {}
+                    episode_env.update(summary)
+                    episode_info["env"] = episode_env
+
+    def _build_episode_summary(self) -> Dict[str, float]:
+        summary: Dict[str, float] = {}
+        for name, value in self._episode_reward_sums.items():
+            summary[f"sum/{name}"] = float(value)
+        for name, value in self._episode_counts.items():
+            summary[f"count/{name}"] = int(value) if isinstance(value, bool) else value
+        summary["len"] = self._episode_len
+        return summary
+
+    def _reset_episode_stats(self) -> None:
+        self._episode_reward_sums = defaultdict(float)
+        self._episode_counts = dict(
+            stall_steps=0,
+            ttc_warning_steps=0,
+            collision_happened=0,
+        )
+        self._episode_len = 0
+        self._ttc_warn_horizon = self._infer_ttc_warn_horizon()
+
+    def _infer_ttc_warn_horizon(self) -> float:
+        config = getattr(self.env, "config", None)
+        if isinstance(config, dict):
+            warn = config.get("ttc_warn_horizon", 2.0)
+        else:
+            warn = getattr(config, "ttc_warn_horizon", 2.0) if config is not None else 2.0
+        try:
+            return float(warn)
+        except (TypeError, ValueError):
+            return 2.0
 
     def _compose_ego_state(self, obs_info: Dict[str, Any]) -> Dict[str, Any]:
         ego_pos = np.asarray(obs_info.get('ego_pos', np.zeros(3, dtype=np.float32)), dtype=np.float32)

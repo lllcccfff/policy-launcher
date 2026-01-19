@@ -563,7 +563,6 @@ class CustomUniADPolicy(ActorCriticPolicy):
         features = self.extract_features(obs)
         latent_pi, latent_vf = self.mlp_extractor(features)
         values = self.value_net(latent_vf)
-
         distribution = self._get_action_dist_from_latent(latent_pi)
         actions = distribution.get_actions(deterministic=deterministic)
         log_prob = distribution.log_prob(actions)
@@ -593,7 +592,7 @@ class CustomUniADPolicy(ActorCriticPolicy):
         physical_mean = self.action_net(latent_pi)
         scale = self.env_action_scale.to(physical_mean.device)
         bias = self.env_action_bias.to(physical_mean.device)
-        eps = 1e-6
+        eps = 1e-3
         norm_mean = (physical_mean - bias) / (scale + eps)
         norm_mean = torch.clamp(norm_mean, -1.0 + eps, 1.0 - eps)
         pre_squash_mean = torch.atanh(norm_mean)
@@ -714,6 +713,7 @@ class CustomUniADPolicy(ActorCriticPolicy):
             latent_pi, _ = self.mlp_extractor(features)
         
         device = latent_pi.device
+        self.reference_actor.eval()
         curr_mean_phys = self.action_net(latent_pi)
         with torch.no_grad():
             ref_mean_phys = self.reference_actor(obs)

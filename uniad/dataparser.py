@@ -23,7 +23,7 @@ def get_intrinsic(intrin_dict):
     K[0, 2], K[1, 2] = intrin_dict['cx'], intrin_dict['cy']
     return K
 
-def parse_raw(obs, info, cameras, img_norm_cfg):
+def parse_uniad_obs(obs, info, cameras, img_norm_cfg):
     ego_rot = np.asarray(info['ego_rot'], dtype=np.float32)
     ego_pos = np.asarray(info['ego_pos'], dtype=np.float32)
     R_world_ego = SCR.from_euler('XYZ', ego_rot).as_matrix().astype(np.float32)

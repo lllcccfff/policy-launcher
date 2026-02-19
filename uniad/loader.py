@@ -3,15 +3,16 @@ import sys
 import warnings
 import torch
 
-current_dir = os.path.dirname(os.path.abspath(__file__))  # ADPolicy/rl_framework/rl_modules/
+current_dir = os.path.dirname(os.path.abspath(__file__))  # ADPolicy/rl_framework/uniad/
 uniad_ft = os.path.dirname(os.path.dirname(current_dir)) # ADPolicy/
 uniad_path = os.path.join(uniad_ft, 'UniAD_SIM')
 
-from mmcv import Config, DictAction
+from mmcv import Config
 from mmcv.runner import load_checkpoint, wrap_fp16_model
 from mmcv.cnn import fuse_conv_bn
 from mmcv.parallel import MMDataParallel
 from mmdet3d.models import build_model
+from rl_framework.common.mmcv_utils import cleanup_mmcv_registries
 
 def create_uniad(uniad_config: dict):
 
@@ -20,20 +21,7 @@ def create_uniad(uniad_config: dict):
     device = uniad_config['device']
     warnings.filterwarnings("ignore")
 
-    try:
-        from mmdet.core.bbox.match_costs.builder import MATCH_COST
-
-        if hasattr(MATCH_COST, '_module_dict') and 'DiceCost' in MATCH_COST._module_dict:
-            del MATCH_COST._module_dict['DiceCost']
-            print("✅ Cleared DiceCost from MATCH_COST")
-
-        from mmdet.models.builder import LOSSES
-        if hasattr(LOSSES, '_module_dict') and 'DiceLoss' in LOSSES._module_dict:
-            del LOSSES._module_dict['DiceLoss']
-            print("✅ Cleared DiceLoss from LOSSES")
-        
-    except Exception as e:
-        print(f"⚠️ Registry cleanup failed: {e}")
+    cleanup_mmcv_registries()
 
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Config file not found: {config_path}")

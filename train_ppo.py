@@ -1,4 +1,4 @@
-"""
+﻿"""
 PPO 训练脚本
 使用 UniADWrapper 包装的环境和 CustomUniADPolicy 进行强化学习训练
 """
@@ -28,11 +28,11 @@ from stable_baselines3.common.save_util import load_from_zip_file
 from stable_baselines3.common.utils import get_schedule_fn, explained_variance
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize, VecMonitor
 
-from rl_modules.env_wrapper import UniADWrapper
-from rl_modules.policy_network import CustomUniADPolicy
-from rl_modules.closeLoop import create_uniad
-from rl_modules.dataparser import parse_raw
-from rl_modules.metrics import EpisodeMetricTracker
+from rl_framework.uniad.env_wrapper import UniADWrapper
+from rl_framework.uniad.policy_network import CustomUniADPolicy
+from rl_framework.uniad.loader import create_uniad
+from rl_framework.uniad.dataparser import parse_uniad_obs
+from rl_framework.common.metrics import EpisodeMetricTracker
 
 
 class UniADPPO(PPO):
@@ -919,12 +919,12 @@ def train(
     print("✓ UniAD 模型加载完成")
 
     print("\n[2/5] 创建训练环境...")
-    env = make_vec_env(base_env_fn, uniad_model, parse_raw, config, normalize=False)
+    env = make_vec_env(base_env_fn, uniad_model, parse_uniad_obs, config, normalize=False)
 
     eval_env = None
     if eval_env_fn is not None:
         print("\n[3/5] 创建评估环境...")
-        eval_env = make_vec_env(eval_env_fn, uniad_model, parse_raw, config, normalize=False)
+        eval_env = make_vec_env(eval_env_fn, uniad_model, parse_uniad_obs, config, normalize=False)
 
     print("\n[4/5] 创建 PPO 模型...")
     if model_path is not None:
@@ -991,7 +991,7 @@ def evaluate(model_path: str, base_env_fn: Callable[[], Any], config: TrainingCo
     }
     uniad_model = create_uniad(uniad_config)
 
-    env = make_vec_env(base_env_fn, uniad_model, parse_raw, config, normalize=True)
+    env = make_vec_env(base_env_fn, uniad_model, parse_uniad_obs, config, normalize=True)
     if (config.normalize_obs or config.normalize_reward) and os.path.exists(config.vec_normalize_path):
         env = VecNormalize.load(config.vec_normalize_path, env)
     if isinstance(env, VecNormalize):
@@ -1148,3 +1148,4 @@ if __name__ == "__main__":
     print("  from your_simulator import SimulatorEnv")
     print("  base_env = SimulatorEnv(...)")
     print("  train(base_env, config)")
+

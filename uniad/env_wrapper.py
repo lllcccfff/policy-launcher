@@ -179,10 +179,18 @@ class UniADWrapper(gym.Wrapper):
             info: 环境信息
         """
         self._reset_episode_stats()
-        obs, _ = self.env.reset(seed=seed, **kwargs)
+        reset_output = self.env.reset(seed=seed, **kwargs)
+        if isinstance(reset_output, tuple) and len(reset_output) == 2:
+            obs, reset_info = reset_output
+        else:
+            obs, reset_info = reset_output, {}
         obs_img, obs_info = obs
         self._expert_path_info = self._extract_expert_path_info()
-        obs_info['scene_token'] = self.env.scene_name
+        scene_name = reset_info.get("scene_name") if isinstance(reset_info, dict) else None
+        if scene_name is None:
+            scene_name = getattr(self.env, "scene_name", None)
+        if scene_name is not None:
+            obs_info['scene_token'] = str(scene_name)
         processed_obs = self._process_observation(obs_img, obs_info) # plan_query and bev_feat
         return processed_obs, obs_info
     
@@ -221,7 +229,11 @@ class UniADWrapper(gym.Wrapper):
 
         obs, reward, terminated, truncated, info = self.env.step(control_action)
         obs_img, obs_info = obs
-        obs_info['scene_token'] = self.env.scene_name
+        scene_name = info.get("scene_name") if isinstance(info, dict) else None
+        if scene_name is None:
+            scene_name = getattr(self.env, "scene_name", None)
+        if scene_name is not None:
+            obs_info['scene_token'] = str(scene_name)
 
         processed_obs = self._process_observation(obs_img, obs_info)
 

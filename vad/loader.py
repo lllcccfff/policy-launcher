@@ -14,10 +14,6 @@ from mmdet3d.models import build_model
 
 from rl_framework.common.mmcv_utils import cleanup_mmcv_registries
 
-current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(os.path.dirname(current_dir))
-vad_path = os.path.join(project_root, "VAD")
-
 
 def _import_plugin_from_cfg(cfg: Config, config_rel_path: str) -> None:
     if not getattr(cfg, "plugin", False):
@@ -56,19 +52,25 @@ def create_vad(vad_config: Dict[str, Any]):
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
 
-    if vad_path not in sys.path:
-        sys.path.insert(0, vad_path)
+    ad_root = str(vad_config.get("AD_root", "")).strip()
+    if not ad_root:
+        raise ValueError("vad_config must define `AD_root`")
+
+    config_path_abs = os.path.abspath(config_path)
+    checkpoint_path_abs = os.path.abspath(checkpoint_path)
+    vad_root = os.path.abspath(ad_root)
+
+    if vad_root not in sys.path:
+        sys.path.insert(0, vad_root)
 
     # Ensure extension classes are registered before build_model().
     import rl_framework.vad.vad_ext  # noqa: F401
 
     original_cwd = os.getcwd()
-    config_path_abs = os.path.abspath(config_path)
-    checkpoint_path_abs = os.path.abspath(checkpoint_path)
 
     try:
-        os.chdir(vad_path)
-        config_rel_path = os.path.relpath(config_path_abs, vad_path)
+        os.chdir(vad_root)
+        config_rel_path = os.path.relpath(config_path_abs, vad_root)
         cfg = Config.fromfile(config_rel_path)
 
         if cfg.get("custom_imports", None):

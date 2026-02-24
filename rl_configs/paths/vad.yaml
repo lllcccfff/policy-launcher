@@ -1,0 +1,6 @@
+base_config: base.yaml
+
+vad:
+  ad_root: "VAD"
+  config_path: "projects/configs/VAD/VAD_base_stage_2.py"
+  checkpoint_path: "ckpts/VAD_base.pth"

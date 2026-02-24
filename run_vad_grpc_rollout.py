@@ -82,7 +82,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=str, default="./tmp", help="Output video directory")
     parser.add_argument("--vad-config", type=str, default=DEFAULT_VAD_CONFIG, help="VAD config path")
     parser.add_argument("--vad-checkpoint", type=str, default=DEFAULT_VAD_CKPT, help="VAD checkpoint path")
-    parser.add_argument("--device", type=str, default="cuda:0", help="VAD inference device")
+    parser.add_argument("--device", type=str, default="cuda", help="VAD inference device")
     return parser.parse_args()
 
 
@@ -160,3 +160,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

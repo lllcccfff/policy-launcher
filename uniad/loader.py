@@ -3,16 +3,13 @@ import sys
 import warnings
 import torch
 
-current_dir = os.path.dirname(os.path.abspath(__file__))  # ADPolicy/rl_framework/uniad/
-uniad_ft = os.path.dirname(os.path.dirname(current_dir)) # ADPolicy/
-uniad_path = os.path.join(uniad_ft, 'UniAD_SIM')
-
 from mmcv import Config
 from mmcv.runner import load_checkpoint, wrap_fp16_model
 from mmcv.cnn import fuse_conv_bn
 from mmcv.parallel import MMDataParallel
 from mmdet3d.models import build_model
 from rl_framework.common.mmcv_utils import cleanup_mmcv_registries
+
 
 def create_uniad(uniad_config: dict):
 
@@ -28,20 +25,25 @@ def create_uniad(uniad_config: dict):
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
     
+    ad_root = str(uniad_config.get("AD_root", "")).strip()
+    if not ad_root:
+        raise ValueError("uniad_config must define `AD_root`")
+
+    config_path_abs = os.path.abspath(config_path)
+    checkpoint_path_abs = os.path.abspath(checkpoint_path)
+    uniad_root = os.path.abspath(ad_root)
+
     print(f"Loading config from: {config_path}")
     print(f"Loading checkpoint from: {checkpoint_path}")
+    print(f"Using AD_root: {uniad_root}")
 
-    uniad_root = uniad_path
     if uniad_root not in sys.path:
         sys.path.insert(0, uniad_root)
         print(f"Added UniAD root to sys.path: {uniad_root}")
 
     original_cwd = os.getcwd()
     print(f"Original working directory: {original_cwd}")
-    
-    config_path_abs = os.path.abspath(config_path)
-    checkpoint_path_abs = os.path.abspath(checkpoint_path)
-    
+
     try:
         os.chdir(uniad_root)
         print(f"Changed working directory to: {os.getcwd()}")

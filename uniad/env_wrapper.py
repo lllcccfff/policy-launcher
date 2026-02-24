@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 
 import numpy as np
 
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+project_root = os.getcwd()
 sys.path.insert(0, project_root)
 sys.path.insert(0, os.path.join(project_root, "simulator/GaussianDrive"))
 sys.path.insert(0, os.path.join(project_root, "simulator/EasyDrive"))
@@ -98,14 +98,17 @@ class UniADWrapper(gym.Wrapper):
         bev_w: int = 200,
         planning_steps: int = 6,
         uniad_device: str = 'cuda',
-        policy_device: str = 'cuda'
+        policy_device: str = 'cuda',
+        lateral_bounds: Tuple[float, float] = (-0.6, 0.6),
+        longitudinal_bounds: Tuple[float, float] = (0.0, 4.0),
     ):
         """
         Args:
             env: 基础环境
             uniad_model: UniAD模型实例
             dataparser: 数据解析函数，接收(obs, info)返回raw_data
-            device: 推理设备
+            lateral_bounds: 横向位移边界 (min, max)
+            longitudinal_bounds: 纵向位移边界 (min, max)
         """
         super().__init__(env)
         self.uniad_model = uniad_model
@@ -142,8 +145,6 @@ class UniADWrapper(gym.Wrapper):
             dtype=np.float32
         )
 
-        lateral_bounds = (-0.6, 0.6)
-        longitudinal_bounds = (0.0, 4.0)
         lat_scale = torch.full((self.planning_steps,), (lateral_bounds[1] - lateral_bounds[0]) * 0.5, dtype=torch.float32)
         lat_bias = torch.full((self.planning_steps,), (lateral_bounds[1] + lateral_bounds[0]) * 0.5, dtype=torch.float32)
         lon_scale = torch.full((self.planning_steps,), (longitudinal_bounds[1] - longitudinal_bounds[0]) * 0.5, dtype=torch.float32)

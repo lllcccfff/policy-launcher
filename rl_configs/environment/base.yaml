@@ -1,27 +1,22 @@
-﻿# Environment Configuration
+# Environment Configuration
 # Controls environment wrapper, action/observation spaces, and reward parameters
 
 action_space:
   # Physical action bounds (in meters)
   lateral_min: -0.6               # Minimum lateral displacement
   lateral_max: 0.6                # Maximum lateral displacement
-  longitudinal_min: -0.5           # Minimum longitudinal displacement
+  longitudinal_min: -0.5          # Minimum longitudinal displacement
   longitudinal_max: 5.0           # Maximum longitudinal displacement
 
 observation_space:
-  # VAD uses token-level dict observations from VAD head outputs.
-  # `bev_h/bev_w` are compatibility placeholders for shared config schema.
-  bev_h: null                     # Placeholder only (none semantics; VAD wrapper does not consume BEV map)
-  bev_w: 0                        # Placeholder only (zero semantics; VAD wrapper does not consume BEV map)
-  embed_dims: 256                 # Token embedding dimension
-  planning_steps: 6               # Predicted trajectory steps (fut_ts)
-  ego_fut_mode: 3                 # Number of future-command modes (one-hot ego_fut_cmd)
+  embed_dims: 256                 # Embedding dimension
+  planning_steps: 6               # Number of planning waypoints
 
 image_normalization:
   # Image preprocessing parameters
   mean: [103.530, 116.280, 123.675]  # BGR mean values
-  std: [1.0, 1.0, 1.0]                # Standard deviation (no normalization)
-  to_rgb: false                       # Keep BGR format
+  std: [1.0, 1.0, 1.0]               # Standard deviation (no normalization)
+  to_rgb: false                      # Keep BGR format
 
 control:
   # Control parameters
@@ -44,6 +39,6 @@ episode:
 
 devices:
   # Device allocation
-  uniad_device: "cuda"          # Device for UniAD backbone
-  policy_device: "cuda"         # Device for policy network
+  uniad_device: "cuda"            # Device for model backbone
+  policy_device: "cuda"           # Device for policy network
 

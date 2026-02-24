@@ -8,13 +8,20 @@ from torch.nn.utils import parametrize
 from gymnasium import spaces
 
 from stable_baselines3.common.distributions import (
-    DiagGaussianDistribution,
     StateDependentNoiseDistribution,
     make_proba_distribution,
 )
 from stable_baselines3.common.policies import ActorCriticPolicy
 
 from rl_framework.common.policy_network import ADFeaturesExtractor, LoRAParametrization
+from rl_framework.rl_utils.lr_utils import (
+    collect_actor_group_lrs,
+    resolve_actor_group_lr,
+    set_policy_actor_aux_brake,
+    set_policy_actor_aux_scales,
+    set_policy_actor_lr,
+    update_policy_optimizer_lrs,
+)
 
 
 class CustomVADPolicy(ActorCriticPolicy):
@@ -32,11 +39,15 @@ class CustomVADPolicy(ActorCriticPolicy):
         lora_dropout: float = 0.0,
         phase: int = 0,
         actor_lr: float = 3e-6,
+        actor_lora_lr_ratio: float = 0.5,
+        actor_adapter_lr_ratio: float = 0.0,
+        actor_std_lr_ratio: float = 0.1,
         critic_lr: float = 1e-5,
         log_std_bounds: Tuple[float, float] = (-5.0, -2.0),
         log_std_init: float = -3.0,
         full_std: bool = True,
         use_expln: bool = True,
+        latent_sde_scale: float = 0.05,
         kl_reg_coef: float = 0.0,
         bc_reg_coef: float = 0.0,
         weight_decay_coef: float = 0.0,
@@ -62,11 +73,21 @@ class CustomVADPolicy(ActorCriticPolicy):
         self.lora_dropout = float(lora_dropout)
 
         self.actor_lr = float(actor_lr)
+        self.actor_lr_base = float(actor_lr)
+        self.actor_lora_lr_ratio = max(0.0, float(actor_lora_lr_ratio))
+        self.actor_adapter_lr_ratio = max(0.0, float(actor_adapter_lr_ratio))
+        self.actor_std_lr_ratio = max(0.0, float(actor_std_lr_ratio))
+        self.actor_lora_warmup_scale = 1.0
+        self.actor_adapter_warmup_scale = 0.0
+        self.actor_aux_brake_scale = 1.0
+        self.actor_std_warmup_scale = 1.0
         self.critic_lr = float(critic_lr)
         self.log_std_bounds = log_std_bounds
         self.sde_log_std_init = log_std_init
         self.sde_full_std = bool(full_std)
         self.sde_use_expln = bool(use_expln)
+        self.latent_sde_scale = float(latent_sde_scale)
+        self.sde_latent_scale = float(latent_sde_scale)
         self.weight_decay_coef = float(weight_decay_coef)
 
         self.kl_reg_coef = float(kl_reg_coef)
@@ -75,10 +96,18 @@ class CustomVADPolicy(ActorCriticPolicy):
         self._last_reg_loss: Optional[torch.Tensor] = None
 
         self._lora_injected = False
-        self.lora_modules = nn.ModuleList()
+        self.lora_modules = None
         self.train_action = False
         self.train_lora = False
+        self.train_adapter = False
         self.train_log_std = False
+        self._actor_group_names: Tuple[str, ...] = ("action", "lora", "adapter", "log_std")
+        self._actor_group_indices: Dict[str, Optional[int]] = {
+            name: None for name in self._actor_group_names
+        }
+        self._actor_group_param_ids: Dict[str, Set[int]] = {
+            name: set() for name in self._actor_group_names
+        }
 
         self._ensure_log_std_bounds()
 
@@ -115,6 +144,8 @@ class CustomVADPolicy(ActorCriticPolicy):
         self.mlp_extractor.latent_dim_vf = self.embed_dims
 
     def _build(self, lr_schedule: Callable[[float], float]) -> None:
+        # Must be created after nn.Module.__init__ (inside ActorCriticPolicy super init path).
+        self.lora_modules = nn.ModuleList()
         self._build_mlp_extractor()
         self._build_planning_modules()
         self.action_net = nn.Identity()
@@ -130,42 +161,34 @@ class CustomVADPolicy(ActorCriticPolicy):
             nn.Linear(self.embed_dims, 1),
         )
 
-        dist_kwargs = None
-        if self.use_sde:
-            dist_kwargs = dict(
-                full_std=self.sde_full_std,
-                use_expln=self.sde_use_expln,
-                learn_features=False,
-                squash_output=True,
-            )
+        dist_kwargs = dict(
+            full_std=self.sde_full_std,
+            use_expln=self.sde_use_expln,
+            learn_features=False,
+            squash_output=True,
+        )
         self.action_dist = make_proba_distribution(
             self.action_space,
             use_sde=self.use_sde,
             dist_kwargs=dist_kwargs,
         )
-        if not isinstance(
-            self.action_dist,
-            (DiagGaussianDistribution, StateDependentNoiseDistribution),
-        ):
-            raise ValueError("CustomVADPolicy only supports continuous action spaces")
+        if not isinstance(self.action_dist, StateDependentNoiseDistribution):
+            raise ValueError("CustomVADPolicy only supports gSDE (StateDependentNoiseDistribution)")
 
-        if isinstance(self.action_dist, StateDependentNoiseDistribution):
-            latent_dim_pi = self.action_dim
-            if self.sde_full_std:
-                log_std_shape = (latent_dim_pi, self.action_dim)
-            else:
-                log_std_shape = (latent_dim_pi, 1)
-            log_std_init = torch.full(log_std_shape, self.sde_log_std_init)
-            self.log_std = nn.Parameter(log_std_init)
-            self.action_dist.latent_sde_dim = latent_dim_pi
-            self.action_dist.sample_weights(self.log_std)
+        latent_dim_pi = self.action_dim
+        std_basis_dim = 2 if (self.sde_full_std and self.action_dim > 1) else 1
+        if self.sde_full_std:
+            log_std_shape = (latent_dim_pi, std_basis_dim)
         else:
-            log_std_init = torch.zeros(self.action_dim)
-            low_noise = max(1e-3, self.low_noise_sigma)
-            high_noise = max(low_noise, self.high_noise_sigma)
-            log_std_init[0::2] = math.log(low_noise)
-            log_std_init[1::2] = math.log(high_noise)
-            self.log_std = nn.Parameter(log_std_init)
+            log_std_shape = (latent_dim_pi, 1)
+            std_basis_dim = 1
+        self.log_std = nn.Parameter(torch.full(log_std_shape, self.sde_log_std_init))
+        self.action_dist.latent_sde_dim = latent_dim_pi
+        self.register_buffer(
+            "std_expansion_matrix",
+            self._create_std_expansion_matrix(std_basis_dim),
+        )
+        self.action_dist.sample_weights(self._expanded_log_std())
 
         self._apply_phase_constraints()
         self._setup_optimizer_once()
@@ -231,10 +254,23 @@ class CustomVADPolicy(ActorCriticPolicy):
             hi = desired_high
         self.log_std_bounds = (lo, hi)
 
+    def _create_std_expansion_matrix(self, std_basis_dim: int) -> torch.Tensor:
+        matrix = torch.zeros(std_basis_dim, self.action_dim, dtype=torch.float32)
+        if std_basis_dim <= 1:
+            matrix[:, :] = 1.0
+            return matrix
+        matrix[0, ::2] = 1.0
+        if self.action_dim > 1:
+            matrix[1, 1::2] = 1.0
+        return matrix
+
     def _clamped_log_std(self) -> torch.Tensor:
         if self.log_std_bounds is None:
             return self.log_std
         return torch.clamp(self.log_std, self.log_std_bounds[0], self.log_std_bounds[1])
+
+    def _expanded_log_std(self) -> torch.Tensor:
+        return self._clamped_log_std() @ self.std_expansion_matrix
 
     @staticmethod
     def _to_bool_mask(mask: torch.Tensor) -> torch.Tensor:
@@ -380,22 +416,27 @@ class CustomVADPolicy(ActorCriticPolicy):
     def _physical_mean_to_pre_squash(self, physical_mean: torch.Tensor) -> torch.Tensor:
         scale = self.env_action_scale.to(physical_mean.device)
         bias = self.env_action_bias.to(physical_mean.device)
-        eps = 1e-3
+        eps = 1e-6
         norm_mean = (physical_mean - bias) / (scale + eps)
         norm_mean = torch.clamp(norm_mean, -1.0 + eps, 1.0 - eps)
         return torch.atanh(norm_mean)
 
     def _get_action_dist_from_latent(self, latent_pi: torch.Tensor):
         pre_squash_mean = self._physical_mean_to_pre_squash(latent_pi)
-        if self.use_sde:
-            if not isinstance(self.action_dist, StateDependentNoiseDistribution):
-                raise ValueError("SDE enabled but action_dist is not StateDependentNoiseDistribution")
-            latent_sde = 0.1 * pre_squash_mean
-            return self.action_dist.proba_distribution(pre_squash_mean, self.log_std, latent_sde)
-        if isinstance(self.action_dist, DiagGaussianDistribution):
-            log_std = self._clamped_log_std()
-            return self.action_dist.proba_distribution(pre_squash_mean, log_std)
-        raise ValueError("Unsupported action distribution")
+        if not isinstance(self.action_dist, StateDependentNoiseDistribution):
+            raise ValueError("Only gSDE mode (StateDependentNoiseDistribution) is supported")
+        latent_sde = self.sde_latent_scale * pre_squash_mean
+        return self.action_dist.proba_distribution(
+            pre_squash_mean,
+            self._expanded_log_std(),
+            latent_sde,
+        )
+
+    def reset_noise(self, n_envs: int = 1) -> None:
+        assert isinstance(
+            self.action_dist, StateDependentNoiseDistribution
+        ), "reset_noise() is only available when using gSDE"
+        self.action_dist.sample_weights(self._expanded_log_std(), batch_size=n_envs)
 
     def forward(self, obs: Dict[str, torch.Tensor], deterministic: bool = False):
         features = self.extract_features(obs)
@@ -580,17 +621,95 @@ class CustomVADPolicy(ActorCriticPolicy):
             for module in self.lora_modules:
                 module.eval()
 
-    def _collect_actor_parameters(self, trainable_only: bool = True) -> List[nn.Parameter]:
-        modules = [self.ego_fut_decoder, self.lora_modules]
-        params: List[nn.Parameter] = []
-        for module in modules:
+    def _collect_actor_group_parameters(self, trainable_only: bool = True) -> Dict[str, List[nn.Parameter]]:
+        groups: Dict[str, List[nn.Parameter]] = {name: [] for name in self._actor_group_names}
+
+        def _extend(name: str, module: Optional[nn.Module]) -> None:
+            if module is None:
+                return
             for param in module.parameters():
                 if trainable_only and not param.requires_grad:
                     continue
-                params.append(param)
+                groups[name].append(param)
+
+        _extend("action", self.ego_fut_decoder)
+        _extend("lora", self.lora_modules)
         if not trainable_only or self.log_std.requires_grad:
-            params.append(self.log_std)
+            groups["log_std"].append(self.log_std)
+        return groups
+
+    def _collect_actor_parameters(self, trainable_only: bool = True) -> List[nn.Parameter]:
+        groups = self._collect_actor_group_parameters(trainable_only=trainable_only)
+        params: List[nn.Parameter] = []
+        for name in self._actor_group_names:
+            params.extend(groups.get(name, []))
         return params
+
+    def _ensure_actor_group_trackers(self) -> None:
+        if not hasattr(self, "_actor_group_names"):
+            self._actor_group_names = ("action", "lora", "adapter", "log_std")
+        if not hasattr(self, "_actor_group_indices"):
+            self._actor_group_indices = {name: None for name in self._actor_group_names}
+        if not hasattr(self, "_actor_group_param_ids"):
+            self._actor_group_param_ids = {name: set() for name in self._actor_group_names}
+
+    def _get_or_create_actor_group(self, group_name: str) -> Optional[Dict[str, Any]]:
+        self._ensure_actor_group_trackers()
+        if not hasattr(self, "optimizer") or self.optimizer is None:
+            return None
+        idx = self._actor_group_indices.get(group_name)
+        if idx is not None and idx < len(self.optimizer.param_groups):
+            return self.optimizer.param_groups[idx]
+        group_config = dict(self.optimizer.defaults)
+        group_config["params"] = []
+        group_config["lr"] = resolve_actor_group_lr(self, group_name)
+        self.optimizer.add_param_group(group_config)
+        idx = len(self.optimizer.param_groups) - 1
+        self._actor_group_indices[group_name] = idx
+        self._actor_group_param_ids.setdefault(group_name, set())
+        return self.optimizer.param_groups[idx]
+
+    def _maybe_add_params_to_actor_optimizer(
+        self,
+        group_name: str,
+        params: List[nn.Parameter],
+        tag: str = "modules",
+    ) -> None:
+        if not params or not hasattr(self, "optimizer") or self.optimizer is None:
+            return
+        self._ensure_actor_group_trackers()
+        trainable_params = [p for p in params if p.requires_grad]
+        if not trainable_params:
+            return
+        known_ids: Set[int] = set()
+        for ids in self._actor_group_param_ids.values():
+            known_ids.update(ids)
+        new_params = [p for p in trainable_params if id(p) not in known_ids]
+        if not new_params:
+            return
+        target_group = self._get_or_create_actor_group(group_name)
+        if target_group is None:
+            return
+        target_group["params"].extend(new_params)
+        group_ids = self._actor_group_param_ids.setdefault(group_name, set())
+        for param in new_params:
+            group_ids.add(id(param))
+        print(f"Added {len(new_params)} new {tag} params to {group_name} group")
+
+    def sync_actor_optimizer_with_modules(
+        self,
+        modules: List[nn.Module],
+        group_name: str,
+        tag: str = "modules",
+    ) -> None:
+        if not modules:
+            return
+        params: List[nn.Parameter] = []
+        for module in modules:
+            if module is None:
+                continue
+            params.extend(list(module.parameters()))
+        self._maybe_add_params_to_actor_optimizer(group_name, params, tag=tag)
 
     def _collect_critic_parameters(self, trainable_only: bool = True) -> List[nn.Parameter]:
         modules = [self.value_adapter, self.value_net]
@@ -603,30 +722,72 @@ class CustomVADPolicy(ActorCriticPolicy):
         return params
 
     def _setup_optimizer_once(self) -> None:
-        actor_params = self._collect_actor_parameters(trainable_only=True)
+        actor_groups = self._collect_actor_group_parameters(trainable_only=True)
         critic_params = self._collect_critic_parameters(trainable_only=True)
-
-        self._actor_group_idx = None
+        optim_groups: List[Dict[str, Any]] = []
         self._critic_group_idx = None
-        groups: List[Dict[str, Any]] = []
-        if actor_params:
-            self._actor_group_idx = len(groups)
-            groups.append(dict(params=actor_params, lr=self.actor_lr))
+        self._ensure_actor_group_trackers()
+        for name in self._actor_group_names:
+            params = actor_groups.get(name, [])
+            if not params:
+                self._actor_group_indices[name] = None
+                self._actor_group_param_ids[name] = set()
+                continue
+            optim_groups.append(dict(params=params, lr=resolve_actor_group_lr(self, name)))
+            self._actor_group_indices[name] = len(optim_groups) - 1
+            self._actor_group_param_ids[name] = {id(p) for p in params}
         if critic_params:
-            self._critic_group_idx = len(groups)
-            groups.append(dict(params=critic_params, lr=self.critic_lr))
-        if not groups:
+            self._critic_group_idx = len(optim_groups)
+            optim_groups.append(dict(params=critic_params, lr=self.critic_lr))
+        if not optim_groups:
             self._critic_group_idx = 0
-            groups.append(dict(params=self.parameters(), lr=self.critic_lr))
-        self.optimizer = self.optimizer_class(groups, **self.optimizer_kwargs)
+            optim_groups.append(dict(params=self.parameters(), lr=self.critic_lr))
+        self.optimizer = self.optimizer_class(optim_groups, **self.optimizer_kwargs)
+
+    def iter_phase_parameter_groups(self):
+        return [
+            ("action", self.train_action, list(self.ego_fut_decoder.parameters())),
+            ("lora", self.train_lora, list(self.lora_modules.parameters())),
+            ("adapter", False, []),
+            ("log_std", self.train_log_std, [self.log_std]),
+        ]
 
     def _update_optimizer_lrs(self) -> None:
+        update_policy_optimizer_lrs(self)
+
+    def _sync_actor_optimizer_params(self) -> None:
         if not hasattr(self, "optimizer") or self.optimizer is None:
             return
-        if self._actor_group_idx is not None:
-            self.optimizer.param_groups[self._actor_group_idx]["lr"] = self.actor_lr
-        if self._critic_group_idx is not None:
-            self.optimizer.param_groups[self._critic_group_idx]["lr"] = self.critic_lr
+        self.sync_actor_optimizer_with_modules(
+            [self.ego_fut_decoder],
+            group_name="action",
+            tag=f"action_phase{self.phase}",
+        )
+        if len(self.lora_modules) > 0:
+            self.sync_actor_optimizer_with_modules(
+                [self.lora_modules],
+                group_name="lora",
+                tag=f"lora_phase{self.phase}",
+            )
+        if self.log_std.requires_grad:
+            self._maybe_add_params_to_actor_optimizer("log_std", [self.log_std], tag="log_std")
+
+    def set_actor_learning_rate(self, lr: float) -> None:
+        set_policy_actor_lr(self, lr)
+
+    def set_actor_aux_lr_scales(
+        self,
+        lora_scale: float,
+        adapter_scale: float,
+        std_scale: Optional[float] = None,
+    ) -> None:
+        set_policy_actor_aux_scales(self, lora_scale, adapter_scale, std_scale)
+
+    def set_actor_aux_brake_scale(self, scale: float) -> None:
+        set_policy_actor_aux_brake(self, scale)
+
+    def get_actor_group_lrs(self) -> Dict[str, float]:
+        return collect_actor_group_lrs(self)
 
     def configure_phase(
         self,
@@ -637,9 +798,19 @@ class CustomVADPolicy(ActorCriticPolicy):
         kl_reg_coef: float,
         bc_reg_coef: float,
         phase_behavior: Optional[Dict[str, Any]] = None,
+        actor_lora_lr_ratio: Optional[float] = None,
+        actor_adapter_lr_ratio: Optional[float] = None,
+        actor_std_lr_ratio: Optional[float] = None,
     ) -> None:
         self.phase = int(phase)
         self.actor_lr = float(actor_lr)
+        self.actor_lr_base = float(actor_lr)
+        if actor_lora_lr_ratio is not None:
+            self.actor_lora_lr_ratio = max(0.0, float(actor_lora_lr_ratio))
+        if actor_adapter_lr_ratio is not None:
+            self.actor_adapter_lr_ratio = max(0.0, float(actor_adapter_lr_ratio))
+        if actor_std_lr_ratio is not None:
+            self.actor_std_lr_ratio = max(0.0, float(actor_std_lr_ratio))
         self.critic_lr = float(critic_lr)
         self.log_std_bounds = log_std_bounds
         self._ensure_log_std_bounds()
@@ -652,22 +823,40 @@ class CustomVADPolicy(ActorCriticPolicy):
         train_lora = bool(behavior.get("train_lora", False))
         train_log_std = bool(behavior.get("train_log_std", False))
 
+        injected_lora = False
         if train_lora:
-            self.ensure_decoder_lora(
+            injected_lora = self.ensure_decoder_lora(
                 rank=self.lora_rank,
                 alpha=self.lora_alpha,
                 dropout=self.lora_dropout,
             )
         self.train_action = train_action
+        self.train_adapter = False
         self.train_lora = train_lora and self._lora_injected
         self.train_log_std = train_log_std
 
         self._apply_phase_constraints()
-        self._setup_optimizer_once()
+        self._sync_actor_optimizer_params()
         self._update_optimizer_lrs()
-        self._log_phase_state()
+        self._log_actor_param_group_overview()
+        self._log_phase_state(assert_lora=train_lora and injected_lora)
 
-    def _log_phase_state(self) -> None:
+    def _log_actor_param_group_overview(self) -> None:
+        if not hasattr(self, "optimizer") or self.optimizer is None:
+            return
+        parts: List[str] = []
+        for name in self._actor_group_names:
+            idx = self._actor_group_indices.get(name)
+            lr = resolve_actor_group_lr(self, name)
+            count = 0
+            if idx is not None and idx < len(self.optimizer.param_groups):
+                group = self.optimizer.param_groups[idx]
+                lr = float(group.get("lr", lr))
+                count = len(group.get("params", []))
+            parts.append(f"{name}:lr={lr:.2e},n={count}")
+        print(f"[Phase {self.phase}] actor_groups | " + " | ".join(parts))
+
+    def _log_phase_state(self, assert_lora: bool = False) -> None:
         actor_params = self._collect_actor_parameters(trainable_only=True)
         critic_params = self._collect_critic_parameters(trainable_only=True)
         print(
@@ -682,15 +871,21 @@ class CustomVADPolicy(ActorCriticPolicy):
                 f"  - opt_group[{idx}] lr={group.get('lr', 0.0):.2e} "
                 f"trainable={trainable_count}/{len(group['params'])}"
             )
+        if assert_lora:
+            self._assert_lora_in_optimizer()
 
-    def _get_optimizer_param_ids(self) -> Set[int]:
-        if self.optimizer is None:
-            return set()
-        param_ids: Set[int] = set()
-        for group in self.optimizer.param_groups:
-            for param in group["params"]:
-                param_ids.add(id(param))
-        return param_ids
+    def _assert_lora_in_optimizer(self) -> None:
+        lora_group_idx = self._actor_group_indices.get("lora")
+        if lora_group_idx is None or self.optimizer is None:
+            return
+        lora_params = [p for p in self.lora_modules.parameters() if p.requires_grad]
+        if not lora_params:
+            return
+        actor_group = self.optimizer.param_groups[lora_group_idx]
+        actor_ids = {id(p) for p in actor_group["params"]}
+        missing = {id(p) for p in lora_params} - actor_ids
+        if missing:
+            raise AssertionError(f"LoRA parameters missing from actor optimizer group: {len(missing)}")
 
     def train(self, mode: bool) -> "CustomVADPolicy":
         super().train(mode)

@@ -1,4 +1,4 @@
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
 
 import numpy as np
 import torch
@@ -18,6 +18,8 @@ class VADWrapper(UniADWrapper):
         planning_steps: int = 6,
         uniad_device: str = "cuda",
         policy_device: str = "cuda",
+        lateral_bounds: Tuple[float, float] = (-0.6, 0.6),
+        longitudinal_bounds: Tuple[float, float] = (-0.5, 5.0),
     ):
         super().__init__(
             env=env,
@@ -29,6 +31,8 @@ class VADWrapper(UniADWrapper):
             planning_steps=planning_steps,
             uniad_device=uniad_device,
             policy_device=policy_device,
+            lateral_bounds=lateral_bounds,
+            longitudinal_bounds=longitudinal_bounds,
         )
         self.vad_model = self.uniad_model
         model_impl = self.vad_model.module if hasattr(self.vad_model, "module") else self.vad_model

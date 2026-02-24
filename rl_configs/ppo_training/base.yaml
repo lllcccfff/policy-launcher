@@ -136,6 +136,6 @@ phase_presets:
 # portion is cumulative (e.g., 0.05 = 5%, 0.50 = 50%, 1.0 = 100%)
 phase_schedule:
   - [0, 0.05]   # Phase 0: first 5% of steps
-  - [1, 0.4]   # Phase 1: up to 45% total
+  - [1, 0.4]    # Phase 1: up to 45% total
   - [2, 0.35]   # Phase 2: up to 80% total
-  - [3, 0.2]   # Phase 3: remaining steps
+  - [3, 0.2]    # Phase 3: remaining steps

@@ -4,27 +4,20 @@ PPO 训练脚本
 """
 import os
 import sys
-import numbers
 import pprint
 import torch
-import torch.nn.functional as F
 import numpy as np
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from datetime import datetime
 
-from gymnasium import spaces
-
 # Stable-Baselines3
-from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import (
     CheckpointCallback, 
     EvalCallback, 
     CallbackList,
-    BaseCallback
 )
 from stable_baselines3.common.logger import configure
 from stable_baselines3.common.save_util import load_from_zip_file
-from stable_baselines3.common.utils import get_schedule_fn, explained_variance
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize, VecMonitor
 
 from rl_framework.uniad.env_wrapper import UniADWrapper
@@ -33,502 +26,17 @@ from rl_framework.uniad.loader import create_uniad
 from rl_framework.uniad.dataparser import parse_uniad_obs
 from rl_framework.common.metrics import EpisodeMetricTracker
 from rl_framework.rl_configs.config_loader import load_configs
-from rl_framework.rl_utils.lr_utils import (
-    apply_aux_lr_brake,
-    apply_aux_lr_warmup,
-    assign_actor_critic_lr_schedules,
+from rl_framework.rl_utils.ppo_trainer import ADPPO
+from rl_framework.rl_utils.training_utils import (
+    TrainingConfig,
+    TensorboardCallback,
+    EpisodeInfoPrinterCallback,
+    _to_schedule,
+    _get_env_action_affine,
+    ensure_rollout_buffer_size,
+    build_phase_plan,
     build_learning_rate_schedule,
-    configure_aux_lr_warmup_steps,
-    configure_phase_lr_context,
-    step_aux_lr_warmup,
-    update_learning_rate,
 )
-
-
-class UniADPPO(PPO):
-    """Custom PPO trainer that injects UniAD-specific regularization into the loss."""
-
-    def __init__(self, *args, **kwargs):
-        self.grad_accum_steps = max(1, int(kwargs.pop("grad_accum_steps", 1)))
-        super().__init__(*args, **kwargs)
-        self._actor_lr_schedule: Optional[Union[float, Callable[[float], float]]] = None
-        self._critic_lr_schedule: Optional[Union[float, Callable[[float], float]]] = None
-        self._phase_total_timesteps: int = 0
-        self._phase_start_num_timesteps: int = 0
-        self._lora_warmup_steps = 10
-        self._adapter_warmup_steps = 15
-        self._std_warmup_steps = 15
-        self._lora_warmup_progress = 0
-        self._adapter_warmup_progress = 0
-        self._std_warmup_progress = 0
-        self._update_iterations = 0
-        self._bc_loss_ma = 0.0
-        self._kl_stop_triggers = 0
-
-    def train(self) -> None:
-        self.policy.set_training_mode(False)
-        self._update_iterations += 1
-        self._apply_aux_lr_warmup()
-        self._update_learning_rate(self.policy.optimizer)
-        clip_range = self.clip_range(self._current_progress_remaining)
-        if self.clip_range_vf is not None:
-            clip_range_vf = self.clip_range_vf(self._current_progress_remaining)
-
-        entropy_losses = []
-        pg_losses, value_losses, reg_losses = [], [], []
-        clip_fractions = []
-        approx_kl_divs = []
-
-        continue_training = True
-        kl_early_stop = False
-
-        grad_accum_steps = max(1, getattr(self, "grad_accum_steps", 1))
-        accum_count = 0
-        self.policy.optimizer.zero_grad()
-        last_loss = None
-        pre_step_checked = False
-        kl_window: List[float] = []
-
-        adv_mean = None
-        adv_std = None
-        if self.normalize_advantage:
-            buffer_adv = self.rollout_buffer.advantages
-            if buffer_adv is not None:
-                adv_tensor = buffer_adv
-                if not isinstance(buffer_adv, torch.Tensor):
-                    adv_tensor = torch.as_tensor(buffer_adv, device=self.policy.device)
-                if adv_tensor.numel() > 1:
-                    adv_mean = adv_tensor.mean()
-                    adv_std = adv_tensor.std().clamp_min(1e-8)
-
-        for epoch in range(self.n_epochs):
-            # Do a complete pass on the rollout buffer
-            for rollout_data in self.rollout_buffer.get(self.batch_size):
-                actions = rollout_data.actions
-                if isinstance(self.action_space, spaces.Discrete):
-                    actions = actions.long().flatten()
-
-                if self.use_sde:
-                    # Keep noise reset frequency identical to vanilla PPO for minimal behavior change.
-                    self.policy.reset_noise(self.batch_size)
-
-                values, log_prob, entropy = self.policy.evaluate_actions(
-                    rollout_data.observations, actions
-                )
-                values = values.flatten()
-                advantages = rollout_data.advantages
-                if self.normalize_advantage and advantages.numel() > 1 and adv_mean is not None:
-                    advantages = (advantages - adv_mean) / adv_std
-
-                ratio = torch.exp(log_prob - rollout_data.old_log_prob)
-                policy_loss_1 = advantages * ratio
-                policy_loss_2 = advantages * torch.clamp(ratio, 1 - clip_range, 1 + clip_range)
-                policy_loss = -torch.min(policy_loss_1, policy_loss_2).mean()
-
-                pg_losses.append(policy_loss.item())
-                clip_fraction = torch.mean((torch.abs(ratio - 1) > clip_range).float()).item()
-                clip_fractions.append(clip_fraction)
-
-                if self.clip_range_vf is None:
-                    values_pred = values
-                else:
-                    values_pred = rollout_data.old_values + torch.clamp(
-                        values - rollout_data.old_values, -clip_range_vf, clip_range_vf
-                    )
-                value_loss = F.mse_loss(rollout_data.returns, values_pred)
-                value_losses.append(value_loss.item())
-
-                if entropy is None:
-                    entropy_loss = -torch.mean(-log_prob)
-                else:
-                    entropy_loss = -torch.mean(entropy)
-                entropy_losses.append(entropy_loss.item())
-
-                reg_loss = torch.zeros((), device=values.device)
-                if hasattr(self.policy, "pop_regularization_loss"):
-                    reg_loss = self.policy.pop_regularization_loss()
-                reg_losses.append(reg_loss.item())
-
-                loss = (
-                    policy_loss
-                    + self.ent_coef * entropy_loss
-                    + self.vf_coef * value_loss
-                    + reg_loss
-                )
-
-                with torch.no_grad():
-                    log_ratio = log_prob - rollout_data.old_log_prob
-                    approx_kl_div = torch.mean((torch.exp(log_ratio) - 1) - log_ratio)
-                    approx_kl_value = float(approx_kl_div.cpu().numpy())
-                    approx_kl_divs.append(approx_kl_value)
-                    kl_window.append(approx_kl_value)
-
-                last_loss = loss
-                (loss / grad_accum_steps).backward()
-                accum_count += 1
-
-                if accum_count % grad_accum_steps == 0:
-                    if kl_window and self.target_kl is not None:
-                        mean_kl = sum(kl_window) / len(kl_window)
-                        kl_window.clear()
-                        if mean_kl > 1.5 * self.target_kl:
-                            continue_training = False
-                            self._kl_stop_triggers += 1
-                            self.policy.optimizer.zero_grad()
-                            if self.verbose >= 1:
-                                print(
-                                    f"[KLStop] early stop before step at epoch {epoch + 1}, mean_kl={mean_kl:.4f}, target={self.target_kl:.4f}"
-                                )
-                            break
-                    if not pre_step_checked:
-                        max_diff = torch.max(torch.abs(log_prob - rollout_data.old_log_prob)).item()
-                        print(f"[PPO] pre-step |log_prob-old_log_prob|_max={max_diff:.3e}")
-                        pre_step_checked = True
-                    torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
-                    self.policy.optimizer.step()
-                    self.policy.optimizer.zero_grad()
-                    accum_count = 0
-
-            if not continue_training:
-                break
-
-        if accum_count > 0 and continue_training:
-            if kl_window and self.target_kl is not None:
-                mean_kl = sum(kl_window) / len(kl_window)
-                kl_window.clear()
-                if mean_kl > 1.5 * self.target_kl:
-                    self._kl_stop_triggers += 1
-                    self.policy.optimizer.zero_grad()
-                    if self.verbose >= 1:
-                        print(f"[KLStop] skipped final step, mean_kl={mean_kl:.4f}, target={self.target_kl:.4f}")
-                    continue_training = False
-            if continue_training:
-                torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
-                self.policy.optimizer.step()
-                self.policy.optimizer.zero_grad()
-                accum_count = 0
-
-        mean_kl_value = float(np.mean(approx_kl_divs)) if approx_kl_divs else 0.0
-        self._step_aux_lr_warmup()
-
-        self._n_updates += self.n_epochs
-        explained_var = explained_variance(
-            self.rollout_buffer.values.flatten(), self.rollout_buffer.returns.flatten()
-        )
-
-        self.logger.record("train/entropy_loss", np.mean(entropy_losses))
-        self.logger.record("train/policy_gradient_loss", np.mean(pg_losses))
-        self.logger.record("train/value_loss", np.mean(value_losses))
-        mean_reg_loss = float(np.mean(reg_losses)) if reg_losses else 0.0
-        if not hasattr(self, "_bc_loss_ma") or not np.isfinite(self._bc_loss_ma):
-            self._bc_loss_ma = mean_reg_loss
-        else:
-            self._bc_loss_ma = 0.9 * self._bc_loss_ma + 0.1 * mean_reg_loss
-        self.logger.record("train/reg_loss", mean_reg_loss)
-        self.logger.record("train/reg_loss_ma", self._bc_loss_ma)
-        self.logger.record("train/approx_kl", mean_kl_value)
-        self.logger.record("train/kl_stop_count", float(self._kl_stop_triggers))
-        self.logger.record("train/clip_fraction", np.mean(clip_fractions))
-        final_loss = last_loss.item() if last_loss is not None else 0.0
-        self.logger.record("train/loss", final_loss)
-        self.logger.record("train/explained_variance", explained_var)
-        if hasattr(self.policy, "log_std"):
-            self.logger.record("train/std", torch.exp(self.policy.log_std).mean().item())
-
-        lr_stats = getattr(self.policy, "get_actor_group_lrs", lambda: {})()
-        for name, lr in lr_stats.items():
-            self.logger.record(f"train/lr_{name}", lr)
-            
-        self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
-        self.logger.record("train/clip_range", clip_range)
-        if self.clip_range_vf is not None:
-            self.logger.record("train/clip_range_vf", clip_range_vf)
-
-    def _get_phase_progress_remaining(self) -> float:
-        if self._phase_total_timesteps > 0:
-            elapsed = max(self.num_timesteps - self._phase_start_num_timesteps, 0)
-            ratio = min(elapsed / max(self._phase_total_timesteps, 1), 1.0)
-            return 1.0 - ratio
-        return self._current_progress_remaining
-
-    @staticmethod
-    def _eval_schedule(schedule: Optional[Union[float, Callable[[float], float]]], progress: float) -> Optional[float]:
-        if schedule is None:
-            return None
-        if callable(schedule):
-            return float(schedule(progress))
-        return float(schedule)
-
-    def _apply_aux_lr_warmup(self) -> None:
-        apply_aux_lr_warmup(self)
-
-    def _step_aux_lr_warmup(self) -> None:
-        step_aux_lr_warmup(self)
-
-    def _apply_aux_lr_brake(self, mean_kl: float) -> float:
-        return apply_aux_lr_brake(self, mean_kl)
-
-    def set_aux_lr_warmup_steps(
-        self,
-        lora_steps: Optional[int] = None,
-        adapter_steps: Optional[int] = None,
-        std_steps: Optional[int] = None,
-        reset_progress: bool = False,
-    ) -> None:
-        configure_aux_lr_warmup_steps(
-            self,
-            lora_steps=lora_steps,
-            adapter_steps=adapter_steps,
-            std_steps=std_steps,
-            reset_progress=reset_progress,
-        )
-
-    def set_actor_critic_lr_schedules(
-        self,
-        actor_schedule: Optional[Union[float, Callable[[float], float]]],
-        critic_schedule: Optional[Union[float, Callable[[float], float]]],
-    ) -> None:
-        assign_actor_critic_lr_schedules(self, actor_schedule, critic_schedule)
-
-    def set_phase_lr_context(self, total_phase_steps: int) -> None:
-        configure_phase_lr_context(self, total_phase_steps)
-
-    def _update_learning_rate(self, optimizer: torch.optim.Optimizer) -> None:
-        update_learning_rate(self, optimizer)
-
-class TrainingConfig:
-    def __init__(self, config_dir: Optional[str] = None, override_dir: Optional[str] = None):
-        """
-        Initialize training configuration from YAML files.
-
-        Args:
-            config_dir: Directory containing base YAML config files (default: rl_configs/)
-            override_dir: Optional directory containing override YAML files
-        """
-        # Load all configs from YAML
-        configs = load_configs(config_dir, override_dir, backend="uniad")
-        ppo_cfg = configs['ppo_training']
-        policy_cfg = configs['policy_network']
-        env_cfg = configs['environment']
-        paths_cfg = configs['paths']
-
-        # ============ Path configuration ============
-        self.project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        self.uniad_config_path = os.path.join(self.project_root, paths_cfg.uniad.config_path)
-        self.uniad_checkpoint_path = os.path.join(self.project_root, paths_cfg.uniad.checkpoint_path)
-
-        # Output directories
-        self.output_dir = os.path.join(self.project_root, paths_cfg.output.base_dir)
-        self.log_dir = os.path.join(self.project_root, paths_cfg.output.log_dir)
-        self.checkpoint_dir = os.path.join(self.project_root, paths_cfg.output.checkpoint_dir)
-        self.tensorboard_log = os.path.join(self.project_root, paths_cfg.output.tensorboard_log)
-        self.vec_normalize_path = os.path.join(self.project_root, paths_cfg.normalization.vec_normalize_path)
-        self.eval_results_path = os.path.join(self.project_root, paths_cfg.output.eval_results)
-
-        # ============ Device configuration ============
-        self.uniad_device = env_cfg.devices.uniad_device if torch.cuda.is_available() else 'cpu'
-        self.policy_device = env_cfg.devices.policy_device if torch.cuda.is_available() else 'cpu'
-
-        # ============ Architecture configuration ============
-        self.embed_dims = policy_cfg.architecture.embed_dims
-        self.bev_h = policy_cfg.architecture.bev_h
-        self.bev_w = policy_cfg.architecture.bev_w
-        self.planning_steps = policy_cfg.architecture.planning_steps
-
-        # ============ Normalization ============
-        self.normalize_obs = ppo_cfg.normalization.normalize_obs
-        self.normalize_reward = ppo_cfg.normalization.normalize_reward
-        self.clip_obs = ppo_cfg.normalization.clip_obs
-        self.clip_reward = ppo_cfg.normalization.clip_reward
-
-        # ============ PPO algorithm hyperparameters ============
-        self.n_steps = ppo_cfg.ppo_algorithm.n_steps
-        self.batch_size = ppo_cfg.ppo_algorithm.batch_size
-        self.n_epochs = ppo_cfg.ppo_algorithm.n_epochs
-        self.gamma = ppo_cfg.ppo_algorithm.gamma
-        self.gae_lambda = ppo_cfg.ppo_algorithm.gae_lambda
-        self.clip_range = ppo_cfg.ppo_algorithm.clip_range
-        self.clip_range_vf = ppo_cfg.ppo_algorithm.clip_range_vf
-        self.ent_coef = ppo_cfg.ppo_algorithm.ent_coef
-        self.vf_coef = ppo_cfg.ppo_algorithm.vf_coef
-        self.max_grad_norm = ppo_cfg.ppo_algorithm.max_grad_norm
-        self.learning_rate = ppo_cfg.learning_rate.base_learning_rate
-        self.use_sde = ppo_cfg.ppo_algorithm.use_sde
-        self.sde_sample_freq = ppo_cfg.ppo_algorithm.sde_sample_freq
-        self.lr_schedule = ppo_cfg.learning_rate.schedule
-        self.lr_final_ratio = ppo_cfg.learning_rate.lr_final_ratio
-        self.target_kl = ppo_cfg.ppo_algorithm.target_kl
-        self.grad_accum_steps = ppo_cfg.ppo_algorithm.grad_accum_steps
-
-        # ============ Training logistics ============
-        self.total_timesteps = ppo_cfg.training_logistics.total_timesteps
-        self.save_freq = ppo_cfg.training_logistics.save_freq
-        self.eval_freq = ppo_cfg.training_logistics.eval_freq
-        self.eval_episodes = ppo_cfg.training_logistics.eval_episodes
-        self.verbose = ppo_cfg.training_logistics.verbose
-        self.episode_info_print_every = ppo_cfg.training_logistics.episode_info_print_every
-        self.episode_info_log_to_tb = ppo_cfg.training_logistics.episode_info_log_to_tb
-
-        # ============ Policy configuration ============
-        self.with_adapter = policy_cfg.architecture.with_adapter
-        self.pretrained_planning_weights = paths_cfg.uniad.get('pretrained_planning_weights')
-        if self.pretrained_planning_weights:
-            self.pretrained_planning_weights = os.path.join(self.project_root, self.pretrained_planning_weights)
-
-        self.training_phase = 0
-        self.actor_lr = policy_cfg.learning_rates.actor_lr
-        self.critic_lr = policy_cfg.learning_rates.critic_lr
-        self.actor_lora_lr_ratio = policy_cfg.learning_rates.actor_lora_lr_ratio
-        self.actor_adapter_lr_ratio = policy_cfg.learning_rates.actor_adapter_lr_ratio
-        self.actor_std_lr_ratio = policy_cfg.learning_rates.actor_std_lr_ratio
-        self.lora_warmup_updates = policy_cfg.learning_rates.lora_warmup_updates
-        self.adapter_warmup_updates = policy_cfg.learning_rates.adapter_warmup_updates
-        self.std_warmup_updates = policy_cfg.learning_rates.std_warmup_updates
-
-        self.log_std_bounds = tuple(policy_cfg.exploration.log_std_bounds)
-        self.policy_log_std_init = policy_cfg.exploration.log_std_init
-        self.policy_use_expln = policy_cfg.exploration.use_expln
-        self.policy_full_std = policy_cfg.exploration.full_std
-        self.policy_latent_sde_scale = policy_cfg.exploration.latent_sde_scale
-
-        self.kl_reg_coef = policy_cfg.regularization.kl_reg_coef
-        self.bc_reg_coef = policy_cfg.regularization.bc_reg_coef
-        self.unfreeze_adapter_phase2 = policy_cfg.architecture.unfreeze_adapter_phase2
-
-        self.lora_rank = policy_cfg.lora.rank
-        self.lora_alpha = policy_cfg.lora.alpha
-        self.lora_dropout = policy_cfg.lora.dropout
-        self.optimizer_weight_decay = policy_cfg.optimizer.weight_decay
-
-        self.phase_behavior: Dict[str, Any] = {}
-
-        # ============ Phase presets from YAML ============
-        self.phase_presets = {}
-        for phase_id, preset_data in ppo_cfg.phase_presets.to_dict().items():
-            phase_dict = {}
-            for key, value in preset_data.items():
-                if key == 'phase_behavior':
-                    phase_dict[key] = dict(value)
-                elif key == 'log_std_bounds':
-                    phase_dict[key] = tuple(value)
-                else:
-                    phase_dict[key] = value
-            self.phase_presets[int(phase_id)] = phase_dict
-
-        # ============ Phase schedule from YAML ============
-        self.phase_schedule = [tuple(item) for item in ppo_cfg.phase_schedule]
-
-        self.apply_phase_defaults()
-        
-    def create_dirs(self):
-        """创建必要的目录"""
-        for dir_path in [self.output_dir, self.log_dir, 
-                        self.checkpoint_dir, self.tensorboard_log]:
-            os.makedirs(dir_path, exist_ok=True)
-        print(f"✓ 输出目录已创建: {self.output_dir}")
-
-    def apply_phase_defaults(self, phase: Optional[int] = None):
-        if phase is not None:
-            self.training_phase = phase
-        defaults = self.phase_presets.get(self.training_phase)
-        if defaults is None:
-            self.training_phase = 1
-            defaults = self.phase_presets[self.training_phase]
-        self.phase_behavior = {}
-        for key, value in defaults.items():
-            if key == "phase_behavior":
-                self.phase_behavior = value.copy()
-            else:
-                setattr(self, key, value)
-
-class TensorboardCallback(BaseCallback):
-    """
-    自定义回调：记录额外的训练指标到 Tensorboard
-    """
-    def __init__(self, verbose=0):
-        super().__init__(verbose)
-        
-    def _on_step(self) -> bool:
-        # 记录额外的统计信息
-        if len(self.model.ep_info_buffer) > 0 and len(self.model.ep_info_buffer[0]) > 0:
-            self.logger.record('rollout/ep_len_mean', 
-                             np.mean([ep_info['l'] for ep_info in self.model.ep_info_buffer]))
-            self.logger.record('rollout/ep_rew_mean', 
-                             np.mean([ep_info['r'] for ep_info in self.model.ep_info_buffer]))
-        return True
-
-class EpisodeInfoPrinterCallback(BaseCallback):
-    """
-    打印并记录环境在 info['episode']['env'] 中提供的诊断统计
-    """
-
-    def __init__(
-        self,
-        print_every: int = 1,
-        log_to_tb: bool = True,
-        keys_to_display: Optional[List[str]] = None,
-        verbose: int = 0,
-    ):
-        super().__init__(verbose)
-        self.print_every = max(1, int(print_every))
-        self.log_to_tb = bool(log_to_tb)
-        self.keys_to_display = keys_to_display or [
-            "sum/progress",
-            "sum/ttc",
-            "sum/position",
-            "sum/heading",
-            "sum/collision",
-            "count/stall_steps",
-            "count/ttc_warning_steps",
-        ]
-        self.episode_counter = 0
-
-    def _on_step(self) -> bool:
-        infos = self.locals.get("infos")
-        if not infos:
-            return True
-        for info in infos:
-            if not isinstance(info, dict):
-                continue
-            episode_info = info.get("episode")
-            if not isinstance(episode_info, dict):
-                continue
-            env_stats = episode_info.get("env")
-            if env_stats is None and isinstance(info.get("env"), dict):
-                env_stats = info["env"]
-                episode_info["env"] = env_stats
-            if not isinstance(env_stats, dict):
-                continue
-            self.episode_counter += 1
-            self._log_env_stats(env_stats)
-            if self.episode_counter % self.print_every == 0:
-                reward_str = self._format_value(episode_info.get("r"))
-                length_str = self._format_value(episode_info.get("l"))
-                selected = []
-                for key in self.keys_to_display:
-                    if key in env_stats:
-                        selected.append(f"{key}={self._format_value(env_stats[key])}")
-                detail = " ".join(selected)
-                print(f"[Episode {self.episode_counter}] r={reward_str} l={length_str} {detail}".strip())
-        return True
-
-    def _log_env_stats(self, env_stats: Dict[str, Any]) -> None:
-        if not self.log_to_tb or self.logger is None:
-            return
-        for key, value in env_stats.items():
-            if isinstance(value, numbers.Number):
-                tag = key.replace("/", "_")
-                self.logger.record(f"episode/env/{tag}", float(value))
-
-    @staticmethod
-    def _format_value(value: Any) -> str:
-        if isinstance(value, numbers.Integral):
-            return str(int(value))
-        if isinstance(value, numbers.Number):
-            return f"{float(value):.3f}"
-        if value is None:
-            return "-"
-        return str(value)
 
 def create_env(base_env, uniad_model, dataparser, config: TrainingConfig):
     """
@@ -586,55 +94,6 @@ def make_vec_env(
         )
     return env
 
-def _get_env_action_affine(env) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Extract action scale/bias from a (possibly wrapped) SB3 VecEnv/Env.
-    Works with VecNormalize, DummyVecEnv, SubprocVecEnv, and nested gym wrappers.
-    """
-    # 1) Prefer VecEnv API: get_attr works through VecNormalize and VecEnv wrappers
-    for scale_key, bias_key in [("action_scale", "action_bias"), ("_action_scale", "_action_bias")]:
-        try:
-            scale_list = env.get_attr(scale_key)
-            bias_list = env.get_attr(bias_key)
-            if scale_list and bias_list:
-                scale0, bias0 = scale_list[0], bias_list[0]
-                # Optional: consistency check if multiple envs
-                for s, b in zip(scale_list[1:], bias_list[1:]):
-                    if hasattr(s, "detach"):
-                        s = s.detach().cpu().numpy()
-                    if hasattr(b, "detach"):
-                        b = b.detach().cpu().numpy()
-                    # compare with first (converted below) if needed
-                scale_arr = scale0.detach().cpu().numpy() if hasattr(scale0, "detach") else np.asarray(scale0, np.float32)
-                bias_arr  = bias0.detach().cpu().numpy() if hasattr(bias0, "detach") else np.asarray(bias0, np.float32)
-                return scale_arr, bias_arr
-        except Exception:
-            pass
-
-    # 2) Fallback: manually unwrap common wrappers
-    base_env = env
-    if isinstance(base_env, VecNormalize):
-        base_env = base_env.venv
-
-    # If VecEnv, try to access the first env instance (DummyVecEnv only)
-    if hasattr(base_env, "envs") and getattr(base_env, "envs", None):
-        base_env = base_env.envs[0]
-
-    # Unwrap gym wrappers
-    while hasattr(base_env, "env"):
-        if hasattr(base_env, "action_scale") or hasattr(base_env, "_action_scale"):
-            break
-        base_env = base_env.env
-
-    scale = getattr(base_env, "action_scale", getattr(base_env, "_action_scale", None))
-    bias  = getattr(base_env, "action_bias",  getattr(base_env, "_action_bias", None))
-    if scale is None or bias is None:
-        raise AttributeError("Unable to locate env action scale/bias for policy initialization")
-
-    scale_arr = scale.detach().cpu().numpy() if hasattr(scale, "detach") else np.asarray(scale, np.float32)
-    bias_arr  = bias.detach().cpu().numpy()  if hasattr(bias, "detach") else np.asarray(bias, np.float32)
-    return scale_arr, bias_arr
-
 def create_ppo_model(env, config: TrainingConfig):
     """
     创建 PPO 模型
@@ -684,7 +143,7 @@ def create_ppo_model(env, config: TrainingConfig):
 
     learning_rate = build_learning_rate_schedule(config)
     
-    model = UniADPPO(
+    model = ADPPO(
         policy=CustomUniADPolicy,
         env=env,
         learning_rate=learning_rate,
@@ -783,61 +242,8 @@ def setup_callbacks(config: TrainingConfig, eval_env=None):
     
     return CallbackList(callbacks)
 
-def _to_schedule(value: Optional[Union[float, Callable[[float], float]]]):
-    if value is None:
-        return None
-    if callable(value):
-        return value
-    return get_schedule_fn(value)
-
-def ensure_rollout_buffer_size(model: UniADPPO) -> None:
-    buffer = getattr(model, "rollout_buffer", None)
-    if buffer is None or buffer.buffer_size == model.n_steps:
-        return
-    buffer_cls = buffer.__class__
-    model.rollout_buffer = buffer_cls(
-        model.n_steps,
-        model.observation_space,
-        model.action_space,
-        model.device,
-        gamma=model.gamma,
-        gae_lambda=model.gae_lambda,
-        n_envs=model.n_envs,
-    )
-
-def build_phase_plan(
-    total_steps: int,
-    schedule: Optional[List[Tuple[int, Union[float, int]]]],
-    fallback_phase: int,
-) -> List[Tuple[int, int]]:
-    total_steps = int(total_steps)
-    if total_steps <= 0:
-        return []
-    if not schedule:
-        return [(fallback_phase, total_steps)]
-    plan: List[Tuple[int, int]] = []
-    remaining = total_steps
-    for idx, (phase_id, portion) in enumerate(schedule):
-        if remaining <= 0:
-            break
-        if isinstance(portion, numbers.Integral):
-            allocated = int(portion)
-        else:
-            allocated = int(total_steps * float(portion))
-        allocated = max(min(allocated, remaining), 0)
-        if allocated <= 0 and idx < len(schedule) - 1:
-            continue
-        plan.append((phase_id, allocated))
-        remaining -= allocated
-    if not plan:
-        plan.append((fallback_phase, total_steps))
-    elif remaining > 0:
-        last_phase, last_steps = plan[-1]
-        plan[-1] = (last_phase, last_steps + remaining)
-    return plan
-
 def apply_phase_settings(
-    model: UniADPPO,
+    model: ADPPO,
     config: TrainingConfig,
     phase_id: int,
     phase_steps: int,
@@ -877,7 +283,7 @@ def apply_phase_settings(
 
 
 def run_phase_training(
-    model: UniADPPO,
+    model: ADPPO,
     config: TrainingConfig,
     callbacks: CallbackList,
 ) -> int:
@@ -932,7 +338,8 @@ def train(
     uniad_config = {
         'config_path': config.uniad_config_path,
         'checkpoint_path': config.uniad_checkpoint_path,
-        'device': config.uniad_device
+        'device': config.uniad_device,
+        'AD_root': config.AD_root,
     }
     uniad_model = create_uniad(uniad_config)
     print("✓ UniAD 模型加载完成")
@@ -1006,7 +413,8 @@ def evaluate(model_path: str, base_env_fn: Callable[[], Any], config: TrainingCo
     uniad_config = {
         'config_path': config.uniad_config_path,
         'checkpoint_path': config.uniad_checkpoint_path,
-        'device': config.uniad_device
+        'device': config.uniad_device,
+        'AD_root': config.AD_root,
     }
     uniad_model = create_uniad(uniad_config)
 

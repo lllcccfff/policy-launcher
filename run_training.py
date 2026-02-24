@@ -5,7 +5,8 @@ import os
 import shutil
 import tempfile
 import atexit
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+project_root = os.getcwd()
 gaussiandrive_path = os.path.join(project_root, "simulator/GaussianDrive")
 easydrive_path = os.path.join(project_root, "simulator/EasyDrive")
 streetgs_path = os.path.join(project_root, "simulator/street_gaussians")

@@ -1,0 +1,9 @@
+base_config: base.yaml
+
+architecture:
+  with_adapter: false             # VAD policy has no adapter branch
+  unfreeze_adapter_phase2: false  # No adapter branch in VAD
+
+learning_rates:
+  actor_adapter_lr_ratio: 0.0     # Compatibility placeholder for shared LR pipeline
+  adapter_warmup_updates: 0       # Compatibility placeholder for shared LR pipeline

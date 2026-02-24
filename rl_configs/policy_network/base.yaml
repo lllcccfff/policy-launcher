@@ -8,10 +8,6 @@ architecture:
   bev_w: 200                      # BEV feature map width
   planning_steps: 6               # Number of trajectory waypoints
 
-  # Modules
-  with_adapter: true              # Enable BEV adapter (3-layer CNN)
-  unfreeze_adapter_phase2: true   # Unfreeze adapter in phase 2
-
 lora:
   # LoRA hyperparameters
   rank: 8                         # LoRA rank (bottleneck dimension)
@@ -26,12 +22,10 @@ learning_rates:
 
   # Actor sub-module LR ratios (relative to actor_lr)
   actor_lora_lr_ratio: 0.5        # LoRA LR = actor_lr * ratio
-  actor_adapter_lr_ratio: 0.05    # Adapter LR = actor_lr * ratio
   actor_std_lr_ratio: 0.1         # log_std LR = actor_lr * ratio
 
   # Warmup steps (gradual LR increase for auxiliary modules)
   lora_warmup_updates: 10         # LoRA warmup updates
-  adapter_warmup_updates: 15      # Adapter warmup updates
   std_warmup_updates: 15          # log_std warmup updates
 
 exploration:
@@ -51,3 +45,4 @@ regularization:
 optimizer:
   optimizer_class: "AdamW"        # Optimizer type
   weight_decay: 0.0001            # Weight decay for optimizer
+

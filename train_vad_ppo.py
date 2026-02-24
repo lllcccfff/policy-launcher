@@ -21,8 +21,9 @@ from stable_baselines3.common.utils import get_schedule_fn
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize, VecMonitor
 
 from rl_framework.common.metrics import EpisodeMetricTracker
-from rl_framework.train_ppo import (
-    UniADPPO,
+from rl_framework.rl_configs.config_loader import load_configs
+from rl_framework.rl_utils.ppo_trainer import ADPPO
+from rl_framework.rl_utils.training_utils import (
     TrainingConfig as BaseTrainingConfig,
     TensorboardCallback,
     EpisodeInfoPrinterCallback,
@@ -39,18 +40,22 @@ from rl_framework.vad.dataparser import parse_vad_obs
 
 
 class TrainingConfig(BaseTrainingConfig):
-    def __init__(self):
-        super().__init__()
-        self.vad_config_path = os.path.join(
-            self.project_root,
-            "VAD/projects/configs/VAD/VAD_base_stage_2.py",
-        )
-        self.vad_checkpoint_path = os.path.join(
-            self.project_root,
-            "VAD/ckpts/VAD_base.pth",
-        )
+    def __init__(
+        self,
+        config_dir: Optional[str] = None,
+        override_dir: Optional[str] = None,
+    ):
+        super().__init__(config_dir=config_dir, override_dir=override_dir, backend="vad")
+        vad_paths = self.paths_cfg.get("vad")
+        if vad_paths is None:
+            raise ValueError("paths_vad.yaml must define `vad` section")
+        self.vad_config_path = self.resolve_ad_path(vad_paths.config_path)
+        self.vad_checkpoint_path = self.resolve_ad_path(vad_paths.checkpoint_path)
         self.ego_fut_mode = 3
-        self.use_sde = False
+        self.use_sde = True
+        # VAD has no adapter branch, keep compatibility placeholders for shared LR toolchain.
+        self.actor_adapter_lr_ratio = 0.0
+        self.adapter_warmup_updates = 0
         self.grpc_host = os.environ.get("VAD_GRPC_HOST", "127.0.0.1")
         self.grpc_port = int(os.environ.get("VAD_GRPC_PORT", "50052"))
         self.grpc_timeout_sec = float(os.environ.get("VAD_GRPC_TIMEOUT_SEC", "10.0"))
@@ -62,9 +67,11 @@ class TrainingConfig(BaseTrainingConfig):
     def apply_phase_defaults(self, phase: Optional[int] = None):
         super().apply_phase_defaults(phase=phase)
         self.phase_behavior["train_adapter"] = False
+        self.actor_adapter_lr_ratio = 0.0
 
 
 def create_env(base_env, vad_model, dataparser, config: TrainingConfig):
+    env_cfg = load_configs(backend="vad").get("environment")
     wrapped_env = VADWrapper(
         env=base_env,
         vad_model=vad_model,
@@ -73,6 +80,11 @@ def create_env(base_env, vad_model, dataparser, config: TrainingConfig):
         planning_steps=config.planning_steps,
         uniad_device=config.uniad_device,
         policy_device=config.policy_device,
+        lateral_bounds=(env_cfg.action_space.lateral_min, env_cfg.action_space.lateral_max),
+        longitudinal_bounds=(
+            env_cfg.action_space.longitudinal_min,
+            env_cfg.action_space.longitudinal_max,
+        ),
     )
     print("✓ 环境已包装 (VAD)")
     return wrapped_env
@@ -123,8 +135,12 @@ def create_ppo_model(env, config: TrainingConfig, planning_weights: Dict[str, An
         log_std_init=config.policy_log_std_init,
         use_expln=config.policy_use_expln,
         full_std=config.policy_full_std,
+        latent_sde_scale=config.policy_latent_sde_scale,
         kl_reg_coef=config.kl_reg_coef,
         bc_reg_coef=config.bc_reg_coef,
+        actor_lora_lr_ratio=config.actor_lora_lr_ratio,
+        actor_adapter_lr_ratio=config.actor_adapter_lr_ratio,
+        actor_std_lr_ratio=config.actor_std_lr_ratio,
         weight_decay_coef=config.optimizer_weight_decay,
         optimizer_class=torch.optim.AdamW,
         optimizer_kwargs=dict(weight_decay=1e-4),
@@ -133,7 +149,7 @@ def create_ppo_model(env, config: TrainingConfig, planning_weights: Dict[str, An
     )
 
     learning_rate = build_learning_rate_schedule(config)
-    model = UniADPPO(
+    model = ADPPO(
         policy=CustomVADPolicy,
         env=env,
         learning_rate=learning_rate,
@@ -156,6 +172,12 @@ def create_ppo_model(env, config: TrainingConfig, planning_weights: Dict[str, An
         device=config.policy_device,
         grad_accum_steps=config.grad_accum_steps,
     )
+    if hasattr(model, "set_aux_lr_warmup_steps"):
+        model.set_aux_lr_warmup_steps(
+            lora_steps=config.lora_warmup_updates,
+            adapter_steps=config.adapter_warmup_updates,
+            std_steps=config.std_warmup_updates,
+        )
     lr_mode = "cosine LR schedule" if callable(learning_rate) else "constant LR"
     print(f"✓ PPO 模型已创建 ({lr_mode}, VAD)")
     return model
@@ -202,7 +224,7 @@ def setup_callbacks(config: TrainingConfig, eval_env=None):
 
 
 def apply_phase_settings(
-    model: UniADPPO,
+    model: ADPPO,
     config: TrainingConfig,
     phase_id: int,
     phase_steps: int,
@@ -234,6 +256,9 @@ def apply_phase_settings(
         config.kl_reg_coef,
         config.bc_reg_coef,
         config.phase_behavior,
+        actor_lora_lr_ratio=config.actor_lora_lr_ratio,
+        actor_adapter_lr_ratio=config.actor_adapter_lr_ratio,
+        actor_std_lr_ratio=config.actor_std_lr_ratio,
     )
 
     if previous_n_steps != model.n_steps:
@@ -241,7 +266,7 @@ def apply_phase_settings(
 
 
 def run_phase_training(
-    model: UniADPPO,
+    model: ADPPO,
     config: TrainingConfig,
     callbacks: CallbackList,
 ) -> int:
@@ -315,6 +340,7 @@ def train(
         "config_path": config.vad_config_path,
         "checkpoint_path": config.vad_checkpoint_path,
         "device": config.uniad_device,
+        "AD_root": config.AD_root,
     }
     vad_model = create_vad(vad_config)
     planning_weights = extract_vad_planning_weights(vad_model)
@@ -393,6 +419,7 @@ def evaluate(
         "config_path": config.vad_config_path,
         "checkpoint_path": config.vad_checkpoint_path,
         "device": config.uniad_device,
+        "AD_root": config.AD_root,
     }
     vad_model = create_vad(vad_config)
     planning_weights = extract_vad_planning_weights(vad_model)
@@ -402,7 +429,7 @@ def evaluate(
         f"(timeout={config.grpc_timeout_sec}s)"
     )
 
-    env = make_vec_env(vad_model, parse_vad_obs, config, normalize=True)
+    env = make_vec_env(vad_model, parse_vad_obs, config, normalize=False)
     if (config.normalize_obs or config.normalize_reward) and os.path.exists(
         config.vec_normalize_path
     ):
@@ -425,6 +452,9 @@ def evaluate(
         config.kl_reg_coef,
         config.bc_reg_coef,
         config.phase_behavior,
+        actor_lora_lr_ratio=config.actor_lora_lr_ratio,
+        actor_adapter_lr_ratio=config.actor_adapter_lr_ratio,
+        actor_std_lr_ratio=config.actor_std_lr_ratio,
     )
     model.set_parameters(params, exact_match=False, device=config.policy_device)
 
@@ -565,72 +595,3 @@ def evaluate(
         )
         print(f"{'=' * 60}")
     env.close()
-
-
-def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train/Eval VAD PPO with GrpcClientEnv")
-    parser.add_argument("--eval", action="store_true", help="Run evaluation mode")
-    parser.add_argument("--model-path", type=str, default=None, help="Model path for eval or resume training")
-    parser.add_argument(
-        "--phase",
-        type=int,
-        default=int(os.environ.get("VAD_TRAIN_PHASE", 0)),
-        help="Training phase id",
-    )
-    parser.add_argument("--total-timesteps", type=int, default=75_000, help="Total timesteps for training")
-    parser.add_argument("--save-freq", type=int, default=15_000, help="Checkpoint save frequency")
-    parser.add_argument("--eval-freq", type=int, default=20_000, help="Eval callback frequency")
-    parser.add_argument("--eval-episodes", type=int, default=3, help="Eval episodes for callback")
-    parser.add_argument("--n-eval-episodes", type=int, default=10, help="Eval episodes for --eval mode")
-    parser.add_argument("--no-eval-env", action="store_true", help="Disable eval env/callback during training")
-    parser.add_argument("--grpc-host", type=str, default=None, help="gRPC server host")
-    parser.add_argument("--grpc-port", type=int, default=None, help="gRPC server port")
-    parser.add_argument("--grpc-timeout-sec", type=float, default=None, help="gRPC timeout in seconds")
-    parser.add_argument(
-        "--no-grpc-auto-wait-ready",
-        action="store_true",
-        help="Disable auto wait for gRPC channel readiness",
-    )
-    return parser.parse_args()
-
-
-def _apply_cli_overrides(config: TrainingConfig, args: argparse.Namespace) -> None:
-    config.training_phase = int(args.phase)
-    config.apply_phase_defaults(config.training_phase)
-    config.total_timesteps = int(args.total_timesteps)
-    config.save_freq = int(args.save_freq)
-    config.eval_freq = int(args.eval_freq)
-    config.eval_episodes = int(args.eval_episodes)
-    if args.grpc_host is not None:
-        config.grpc_host = str(args.grpc_host)
-    if args.grpc_port is not None:
-        config.grpc_port = int(args.grpc_port)
-    if args.grpc_timeout_sec is not None:
-        config.grpc_timeout_sec = float(args.grpc_timeout_sec)
-    if args.no_grpc_auto_wait_ready:
-        config.grpc_auto_wait_ready = False
-
-
-def main() -> int:
-    args = _parse_args()
-    config = TrainingConfig()
-    _apply_cli_overrides(config, args)
-
-    if args.eval:
-        model_path = args.model_path or os.path.join(config.checkpoint_dir, "ppo_vad_final.zip")
-        evaluate(model_path=model_path, config=config, n_episodes=int(args.n_eval_episodes))
-        return 0
-
-    train(
-        config=config,
-        with_eval_env=not args.no_eval_env,
-        model_path=args.model_path,
-    )
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(
-        "Direct execution of train_vad_ppo.py is disabled. "
-        "Use `python rl_framework/run_vad_training.py`."
-    )

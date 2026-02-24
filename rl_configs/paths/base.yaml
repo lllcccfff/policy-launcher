@@ -1,12 +1,6 @@
 # Paths Configuration
 # File paths and directory locations
 
-# UniAD model paths
-uniad:
-  config_path: "UniAD_SIM/projects/configs/stage2_e2e/base_e2e.py"
-  checkpoint_path: "UniAD_SIM/ckpts/uniad_base_e2e.pth"
-  pretrained_planning_weights: "actor_ckpts/planning_modules.pth"
-
 # Output directories
 output:
   base_dir: "rl_outputs"
@@ -23,3 +17,4 @@ normalization:
 scene:
   config_dir_env_var: "SCENE_CONFIG_DIR"
   default_config_dir: "./configs/exps/sim/cirr_4_train"
+

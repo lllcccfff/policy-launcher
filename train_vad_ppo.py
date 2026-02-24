@@ -630,4 +630,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(
+        "Direct execution of train_vad_ppo.py is disabled. "
+        "Use `python rl_framework/run_vad_training.py`."
+    )

@@ -42,8 +42,8 @@ def main():
     config.eval_freq = 20_000
     config.eval_episodes = 3
     config.learning_rate = 1e-5
-    config.policy_device = "cuda:0"
-    config.uniad_device = "cuda:0"
+    config.policy_device = "cuda"
+    config.uniad_device = "cuda"
     config.normalize_obs = False
     config.normalize_reward = False
     config.training_phase = int(os.environ.get("VAD_TRAIN_PHASE", 0))
@@ -123,3 +123,4 @@ if __name__ == "__main__":
         run_evaluation()
     else:
         main()
+

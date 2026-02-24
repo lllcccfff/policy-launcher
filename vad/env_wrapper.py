@@ -16,8 +16,8 @@ class VADWrapper(UniADWrapper):
         dataparser,
         embed_dims: int = 256,
         planning_steps: int = 6,
-        uniad_device: str = "cuda:0",
-        policy_device: str = "cuda:1",
+        uniad_device: str = "cuda",
+        policy_device: str = "cuda",
     ):
         super().__init__(
             env=env,
@@ -207,3 +207,4 @@ class VADWrapper(UniADWrapper):
             "ego_fut_cmd": cmd_one_hot.cpu().numpy().astype(np.float32),
         }
         return processed_obs
+

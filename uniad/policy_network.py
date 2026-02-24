@@ -19,6 +19,14 @@ from stable_baselines3.common.distributions import (
 )
 from stable_baselines3.common.policies import ActorCriticPolicy
 from rl_framework.common.policy_network import ADFeaturesExtractor, LoRAParametrization
+from rl_framework.rl_utils.lr_utils import (
+    collect_actor_group_lrs,
+    resolve_actor_group_lr,
+    set_policy_actor_aux_brake,
+    set_policy_actor_aux_scales,
+    set_policy_actor_lr,
+    update_policy_optimizer_lrs,
+)
 
 
 class CustomUniADNetwork(nn.Module):
@@ -259,11 +267,15 @@ class CustomUniADPolicy(ActorCriticPolicy):
         lora_dropout: float = 0.0,
         phase: int = 0,
         actor_lr: float = 3e-6,
+        actor_lora_lr_ratio: float = 0.5,
+        actor_adapter_lr_ratio: float = 0.1,
+        actor_std_lr_ratio: float = 1.0,
         critic_lr: float = 1e-5,
         log_std_bounds: Tuple[float, float] = (-5.0, -2.0),
         log_std_init: float = -3.0,
         full_std: bool = True,
         use_expln: bool = True,
+        latent_sde_scale: float = 0.05,
         kl_reg_coef: float = 0.0,
         bc_reg_coef: float = 0.0,
         unfreeze_adapter_phase2: bool = True,
@@ -282,13 +294,20 @@ class CustomUniADPolicy(ActorCriticPolicy):
         self.lora_alpha = lora_alpha
         self.lora_dropout = lora_dropout
         self.action_dim = planning_steps * 2
-        self.low_noise_sigma = 0.05
-        self.high_noise_sigma = 0.5
 
         self.phase = phase
         self.actor_lr = actor_lr
+        self.actor_lr_base = actor_lr
+        self.actor_lora_lr_ratio = max(0.0, float(actor_lora_lr_ratio))
+        self.actor_adapter_lr_ratio = max(0.0, float(actor_adapter_lr_ratio))
+        self.actor_std_lr_ratio = max(0.0, float(actor_std_lr_ratio))
+        self.actor_lora_warmup_scale = 1.0
+        self.actor_adapter_warmup_scale = 1.0
+        self.actor_aux_brake_scale = 1.0
+        self.actor_std_warmup_scale = 1.0
         self.critic_lr = critic_lr
         self.log_std_bounds = log_std_bounds
+        self.latent_sde_scale = latent_sde_scale
         self.kl_reg_coef = kl_reg_coef
         self.bc_reg_coef = bc_reg_coef
         self.unfreeze_adapter_phase2 = unfreeze_adapter_phase2
@@ -296,13 +315,14 @@ class CustomUniADPolicy(ActorCriticPolicy):
         self.sde_log_std_init = log_std_init
         self.sde_full_std = full_std
         self.sde_use_expln = use_expln
+        self.sde_latent_scale = latent_sde_scale
         self.reference_actor: Optional[FrozenReferenceActor] = None
         self.reference_log_std: Optional[torch.Tensor]
         self._last_reg_loss: Optional[torch.Tensor] = None
         self.phase_behavior: Dict[str, Any] = {}
-
-        self._ensure_log_std_bounds()
-
+        self._actor_group_names: Tuple[str, ...] = ("action", "lora", "adapter", "log_std")
+        self._actor_group_indices: Dict[str, Optional[int]] = {name: None for name in self._actor_group_names}
+        self._actor_group_param_ids: Dict[str, Set[int]] = {name: set() for name in self._actor_group_names}
         kwargs["ortho_init"] = False
         kwargs["features_extractor_class"] = ADFeaturesExtractor
         kwargs["features_extractor_kwargs"] = dict(embed_dims=embed_dims)
@@ -377,22 +397,18 @@ class CustomUniADPolicy(ActorCriticPolicy):
         if isinstance(self.action_dist, StateDependentNoiseDistribution):
             latent_dim_pi = self.mlp_extractor.latent_dim_pi
             if self.sde_full_std:
-                log_std_shape = (latent_dim_pi, self.action_dim)
+                log_std_shape = (latent_dim_pi, 2)
             else:
                 log_std_shape = (latent_dim_pi, 1)
             log_std_init = torch.full(log_std_shape, self.sde_log_std_init)
             self.log_std = nn.Parameter(log_std_init)
             self.action_dist.latent_sde_dim = latent_dim_pi
-            self.action_dist.sample_weights(self.log_std)
+            expansion_matrix = self._create_std_expansion_matrix()
+            self.register_buffer("std_expansion_matrix", expansion_matrix)
+            self.action_dist.sample_weights(self._expanded_log_std())
             self.reference_log_std = None
         else:
-            log_std_init = torch.zeros(self.action_dim)
-            low_noise = max(1e-3, self.low_noise_sigma)
-            high_noise = max(low_noise, self.high_noise_sigma)
-            log_std_init[0::2] = math.log(low_noise)
-            log_std_init[1::2] = math.log(high_noise)
-            self.log_std = nn.Parameter(log_std_init)
-            self.reference_log_std = self.log_std.detach().clone()
+            raise ValueError("Only gSDE mode (StateDependentNoiseDistribution) is supported")
 
         self.train_action = False
         self.train_lora = False
@@ -442,56 +458,83 @@ class CustomUniADPolicy(ActorCriticPolicy):
         if not any(p.requires_grad for p in self.action_net.parameters()):
             self.action_net.eval()
 
-    def _collect_actor_parameters(self, trainable_only: bool = True):
-        modules = [self.action_net, self.mlp_extractor.lora_modules, self.mlp_extractor.bev_adapter]
-        params = []
-        for module in modules:
-            for p in module.parameters():
-                if trainable_only and not p.requires_grad:
+    def _collect_actor_group_parameters(self, trainable_only: bool = True) -> Dict[str, List[nn.Parameter]]:
+        groups: Dict[str, List[nn.Parameter]] = {name: [] for name in self._actor_group_names}
+        # Actor path is split into action/LORA/adapter buckets so each optimizer param_group
+        # can carry an independent learning rate schedule without touching forward logic.
+
+        def _extend(name: str, module: Optional[nn.Module]) -> None:
+            if module is None:
+                return
+            for param in module.parameters():
+                if trainable_only and not param.requires_grad:
                     continue
-                params.append(p)
-        if not trainable_only or self.log_std.requires_grad:
-            params.append(self.log_std)
+                groups[name].append(param)
+
+        _extend("action", getattr(self, "action_net", None))
+        _extend("lora", getattr(self.mlp_extractor, "lora_modules", None))
+        if self.with_adapter and hasattr(self.mlp_extractor, "bev_adapter"):
+            _extend("adapter", self.mlp_extractor.bev_adapter)
+        if getattr(self, "log_std", None) is not None:
+            if not trainable_only or self.log_std.requires_grad:
+                groups["log_std"].append(self.log_std)
+        return groups
+
+    def _collect_actor_parameters(self, trainable_only: bool = True):
+        groups = self._collect_actor_group_parameters(trainable_only=trainable_only)
+        params: List[nn.Parameter] = []
+        for name in self._actor_group_names:
+            params.extend(groups.get(name, []))
         return params
 
-    def _get_optimizer_param_ids(self) -> Set[int]:
-        if not hasattr(self, "optimizer") or self.optimizer is None:
-            return set()
-        existing: Set[int] = set()
-        for group in self.optimizer.param_groups:
-            for param in group["params"]:
-                existing.add(id(param))
-        return existing
+    def _ensure_actor_group_trackers(self) -> None:
+        if not hasattr(self, "_actor_group_names"):
+            self._actor_group_names = ("action", "lora", "adapter", "log_std")
+        if not hasattr(self, "_actor_group_indices"):
+            self._actor_group_indices = {name: None for name in self._actor_group_names}
+        if not hasattr(self, "_actor_group_param_ids"):
+            self._actor_group_param_ids = {name: set() for name in self._actor_group_names}
 
-    def _maybe_add_params_to_actor_optimizer(self, params: List[nn.Parameter], tag: str = "modules") -> None:
+    def _get_or_create_actor_group(self, group_name: str) -> Optional[Dict[str, Any]]:
+        self._ensure_actor_group_trackers()
+        if not hasattr(self, "optimizer") or self.optimizer is None:
+            return None
+        idx = self._actor_group_indices.get(group_name)
+        if idx is not None and idx < len(self.optimizer.param_groups):
+            return self.optimizer.param_groups[idx]
+        group_config = dict(self.optimizer.defaults)
+        group_config["params"] = []
+        group_config["lr"] = resolve_actor_group_lr(self, group_name)
+        self.optimizer.add_param_group(group_config)
+        idx = len(self.optimizer.param_groups) - 1
+        self._actor_group_indices[group_name] = idx
+        self._actor_group_param_ids.setdefault(group_name, set())
+        return self.optimizer.param_groups[idx]
+
+    def _maybe_add_params_to_actor_optimizer(self, group_name: str, params: List[nn.Parameter], tag: str = "modules") -> None:
         if not params or not hasattr(self, "optimizer") or self.optimizer is None:
             return
+        self._ensure_actor_group_trackers()
         trainable_params = [p for p in params if p.requires_grad]
         if not trainable_params:
             return
-        existing_ids = self._get_optimizer_param_ids()
-        new_params = [p for p in trainable_params if id(p) not in existing_ids]
+        known_ids: Set[int] = set()
+        for ids in self._actor_group_param_ids.values():
+            known_ids.update(ids)
+        new_params = [p for p in trainable_params if id(p) not in known_ids]
         if not new_params:
             print(f"{tag} params already present in optimizer")
             return
-        target_group = None
-        if self._actor_group_idx is not None and self._actor_group_idx < len(self.optimizer.param_groups):
-            target_group = self.optimizer.param_groups[self._actor_group_idx]
+        target_group = self._get_or_create_actor_group(group_name)
         if target_group is None:
-            template_group = self.optimizer.param_groups[0] if self.optimizer.param_groups else None
-            if template_group is not None:
-                group_config = {k: v for k, v in template_group.items() if k != "params"}
-            else:
-                group_config = dict(self.optimizer.defaults)
-            group_config["params"] = new_params
-            group_config["lr"] = self.actor_lr
-            self.optimizer.add_param_group(group_config)
-            self._actor_group_idx = len(self.optimizer.param_groups) - 1
-        else:
-            target_group["params"].extend(new_params)
-        print(f"Added {len(new_params)} new {tag} params to optimizer")
+            return
+        target_group["params"].extend(new_params)
+        group_ids = self._actor_group_param_ids.setdefault(group_name, set())
+        for param in new_params:
+            group_ids.add(id(param))
+        print(f"Added {len(new_params)} new {tag} params to {group_name} group")
 
-    def sync_actor_optimizer_with_modules(self, modules: List[nn.Module], tag: str = "modules") -> None:
+    def sync_actor_optimizer_with_modules(self, modules: List[nn.Module], group_name: str, tag: str = "modules") -> None:
         if not modules:
             return
         params: List[nn.Parameter] = []
@@ -499,7 +542,7 @@ class CustomUniADPolicy(ActorCriticPolicy):
             if module is None:
                 continue
             params.extend(list(module.parameters()))
-        self._maybe_add_params_to_actor_optimizer(params, tag=tag)
+        self._maybe_add_params_to_actor_optimizer(group_name, params, tag=tag)
 
     def _collect_critic_parameters(self, trainable_only: bool = True):
         modules = [
@@ -519,6 +562,7 @@ class CustomUniADPolicy(ActorCriticPolicy):
         features = self.extract_features(obs)
         latent_pi, latent_vf = self.mlp_extractor(features)
         values = self.value_net(latent_vf)
+
         distribution = self._get_action_dist_from_latent(latent_pi)
         actions = distribution.get_actions(deterministic=deterministic)
         log_prob = distribution.log_prob(actions)
@@ -527,41 +571,43 @@ class CustomUniADPolicy(ActorCriticPolicy):
     def extract_features(self, obs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         return self.features_extractor(obs)
 
-    def _ensure_log_std_bounds(self) -> None:
-        if self.log_std_bounds is None:
-            return
-        desired_low = math.log(max(1e-6, self.low_noise_sigma))
-        desired_high = math.log(max(self.low_noise_sigma, self.high_noise_sigma))
-        lo, hi = self.log_std_bounds
-        if lo > desired_low:
-            lo = desired_low
-        if hi < desired_high:
-            hi = desired_high
-        self.log_std_bounds = (lo, hi)
+    def _create_std_expansion_matrix(self) -> torch.Tensor:
+        matrix = torch.zeros(2, self.action_dim, dtype=torch.float32)
+        matrix[0, ::2] = 1.0
+        if self.action_dim > 1:
+            matrix[1, 1::2] = 1.0
+        return matrix
 
     def _clamped_log_std(self) -> torch.Tensor:
         if self.log_std_bounds is None:
             return self.log_std
         return torch.clamp(self.log_std, self.log_std_bounds[0], self.log_std_bounds[1])
 
+    def _expanded_log_std(self) -> torch.Tensor:
+        base_log_std = self._clamped_log_std()
+        return base_log_std @ self.std_expansion_matrix
+
     def _get_action_dist_from_latent(self, latent_pi: torch.Tensor):
         physical_mean = self.action_net(latent_pi)
         scale = self.env_action_scale.to(physical_mean.device)
         bias = self.env_action_bias.to(physical_mean.device)
-        eps = 1e-3
+        eps = 1e-6
         norm_mean = (physical_mean - bias) / (scale + eps)
         norm_mean = torch.clamp(norm_mean, -1.0 + eps, 1.0 - eps)
         pre_squash_mean = torch.atanh(norm_mean)
-        if self.use_sde:
-            if not isinstance(self.action_dist, StateDependentNoiseDistribution):
-                raise ValueError("SDE enabled but action_dist is not StateDependentNoiseDistribution")
-            latent_sde = 0.1 * latent_pi
-            return self.action_dist.proba_distribution(pre_squash_mean, self.log_std, latent_sde)
-        else:
-            log_std = self._clamped_log_std()
-            if isinstance(self.action_dist, DiagGaussianDistribution):
-                return self.action_dist.proba_distribution(pre_squash_mean, log_std)
-        raise ValueError("Unsupported action distribution")
+
+        if not isinstance(self.action_dist, StateDependentNoiseDistribution):
+            raise ValueError("Only gSDE mode (StateDependentNoiseDistribution) is supported")
+        latent_sde = self.sde_latent_scale * latent_pi
+        expanded_log_std = self._expanded_log_std()
+        return self.action_dist.proba_distribution(pre_squash_mean, expanded_log_std, latent_sde)
+
+    def reset_noise(self, n_envs: int = 1) -> None:
+        assert isinstance(
+            self.action_dist, StateDependentNoiseDistribution
+        ), "reset_noise() is only available when using gSDE"
+        expanded_log_std = self._expanded_log_std()
+        self.action_dist.sample_weights(expanded_log_std, batch_size=n_envs)
 
     def train(self, mode: bool) -> "CustomUniADPolicy":
         super().train(mode)
@@ -577,12 +623,21 @@ class CustomUniADPolicy(ActorCriticPolicy):
         kl_reg_coef: float,
         bc_reg_coef: float,
         phase_behavior: Optional[Dict[str, Any]] = None,
+        actor_lora_lr_ratio: Optional[float] = None,
+        actor_adapter_lr_ratio: Optional[float] = None,
+        actor_std_lr_ratio: Optional[float] = None,
     ) -> None:
         self.phase = phase
         self.actor_lr = actor_lr
+        self.actor_lr_base = actor_lr
+        if actor_lora_lr_ratio is not None:
+            self.actor_lora_lr_ratio = max(0.0, float(actor_lora_lr_ratio))
+        if actor_adapter_lr_ratio is not None:
+            self.actor_adapter_lr_ratio = max(0.0, float(actor_adapter_lr_ratio))
+        if actor_std_lr_ratio is not None:
+            self.actor_std_lr_ratio = max(0.0, float(actor_std_lr_ratio))
         self.critic_lr = critic_lr
         self.log_std_bounds = log_std_bounds
-        self._ensure_log_std_bounds()
         self.kl_reg_coef = kl_reg_coef
         self.bc_reg_coef = bc_reg_coef
         self.phase_behavior = (phase_behavior or {}).copy()
@@ -609,6 +664,7 @@ class CustomUniADPolicy(ActorCriticPolicy):
         self._apply_phase_constraints()
         self._sync_actor_optimizer_params()
         self._update_optimizer_lrs()
+        self._log_actor_param_group_overview()
         self._log_phase_state(assert_lora=train_lora and injected_lora)
 
     def _sync_reference_actor(self, force: bool = False) -> None:
@@ -625,19 +681,6 @@ class CustomUniADPolicy(ActorCriticPolicy):
             self.reference_log_std = None
         else:
             self.reference_log_std = self.log_std.detach().clone()
-
-    def _infer_device_from_obs(self, obs: Any) -> torch.device:
-        if isinstance(obs, torch.Tensor):
-            return obs.device
-        if isinstance(obs, dict):
-            for value in obs.values():
-                if isinstance(value, torch.Tensor):
-                    return value.device
-        if isinstance(obs, (list, tuple)):
-            for value in obs:
-                if isinstance(value, torch.Tensor):
-                    return value.device
-        return self.device
 
     def evaluate_actions(
         self, obs: torch.Tensor, actions: torch.Tensor
@@ -669,7 +712,6 @@ class CustomUniADPolicy(ActorCriticPolicy):
             latent_pi, _ = self.mlp_extractor(features)
         
         device = latent_pi.device
-        self.reference_actor.eval()
         curr_mean_phys = self.action_net(latent_pi)
         with torch.no_grad():
             ref_mean_phys = self.reference_actor(obs)
@@ -686,16 +728,48 @@ class CustomUniADPolicy(ActorCriticPolicy):
 
         loss = self.bc_reg_coef * F.mse_loss(curr_mean_norm, ref_mean_norm)
         return loss
+    
+    def load_pretrained_weights(self, checkpoint_path: str, strict: bool = True):
+        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        self.mlp_extractor.to(self.device)
+        self.action_net.to(self.device)
+
+        if "attn_module" in checkpoint:
+            self.mlp_extractor.attn_module.load_state_dict(
+                checkpoint["attn_module"], strict=strict
+            )
+            print("✓ attn_module loaded")
+
+        if self.with_adapter and "bev_adapter" in checkpoint:
+            self.mlp_extractor.bev_adapter.load_state_dict(
+                checkpoint["bev_adapter"], strict=strict
+            )
+            print("✓ bev_adapter loaded")
+
+        if "reg_branch" in checkpoint:
+            self.action_net.load_state_dict(checkpoint["reg_branch"], strict=strict)
+            print("✓ reg_branch loaded into action_net")
+        self._sync_reference_actor(force=True)
 
     def _setup_optimizer_once(self) -> None:
-        actor_params = self._collect_actor_parameters(trainable_only=True)
+        actor_groups = self._collect_actor_group_parameters(trainable_only=True)
+        actor_params: List[nn.Parameter] = []
+        for params in actor_groups.values():
+            actor_params.extend(params)
         critic_params = self._collect_critic_parameters(trainable_only=True)
         optim_groups = []
-        self._actor_group_idx = None
         self._critic_group_idx = None
-        if actor_params:
-            self._actor_group_idx = len(optim_groups)
-            optim_groups.append(dict(params=actor_params, lr=self.actor_lr))
+        self._ensure_actor_group_trackers()
+        for name in self._actor_group_names:
+            params = actor_groups.get(name, [])
+            if not params:
+                self._actor_group_indices[name] = None
+                self._actor_group_param_ids[name] = set()
+                continue
+            group_cfg = dict(params=params, lr=resolve_actor_group_lr(self, name))
+            self._actor_group_indices[name] = len(optim_groups)
+            self._actor_group_param_ids[name] = {id(p) for p in params}
+            optim_groups.append(group_cfg)
         if critic_params:
             self._critic_group_idx = len(optim_groups)
             optim_groups.append(dict(params=critic_params, lr=self.critic_lr))
@@ -706,30 +780,102 @@ class CustomUniADPolicy(ActorCriticPolicy):
         self._actor_param_list = actor_params
         self._critic_param_list = critic_params
 
+    def iter_phase_parameter_groups(self):
+        """
+        Yield (group_name, expected_trainable, params) for the modules that toggle with phase configs.
+        Used by learners to sanity check gradient routing.
+        """
+
+        def _collect(module: Optional[nn.Module]) -> List[nn.Parameter]:
+            if module is None:
+                return []
+            return list(module.parameters())
+
+        groups = [
+            ("action", self.train_action, _collect(self.action_net)),
+            ("lora", self.train_lora, _collect(self.mlp_extractor.lora_modules)),
+        ]
+        adapter_should_train = self.train_adapter and self.with_adapter and self.unfreeze_adapter_phase2
+        groups.append(("adapter", adapter_should_train, _collect(getattr(self.mlp_extractor, "bev_adapter", None))))
+        groups.append(("log_std", self.train_log_std, [self.log_std] if hasattr(self, "log_std") else []))
+        return groups
+
     def _update_optimizer_lrs(self) -> None:
-        if not hasattr(self, "optimizer") or self.optimizer is None:
-            return
-        if self._actor_group_idx is not None:
-            self.optimizer.param_groups[self._actor_group_idx]["lr"] = self.actor_lr
-        if self._critic_group_idx is not None:
-            self.optimizer.param_groups[self._critic_group_idx]["lr"] = self.critic_lr
+        update_policy_optimizer_lrs(self)
 
     def _sync_actor_optimizer_params(self) -> None:
         if not hasattr(self, "optimizer") or self.optimizer is None:
             return
-        modules: List[nn.Module] = []
-        if hasattr(self, "action_net"):
-            modules.append(self.action_net)
-        lora_modules = getattr(self.mlp_extractor, "lora_modules", None)
-        if lora_modules is not None:
-            modules.append(lora_modules)
+        # LoRA modules are injected lazily; routing them through the dedicated lora group
+        # keeps their params from mixing with action/adapter tensors when they appear mid-training.
+        module_map: Dict[str, List[nn.Module]] = {
+            "action": [getattr(self, "action_net", None)],
+            "lora": [getattr(self.mlp_extractor, "lora_modules", None)],
+        }
         if self.with_adapter and hasattr(self.mlp_extractor, "bev_adapter"):
-            modules.append(self.mlp_extractor.bev_adapter)
-        modules = [m for m in modules if m is not None]
-        if modules:
-            self.sync_actor_optimizer_with_modules(modules, tag=f"phase{self.phase}")
+            module_map["adapter"] = [self.mlp_extractor.bev_adapter]
+        else:
+            module_map.setdefault("adapter", [])
+        for group_name, modules in module_map.items():
+            valid_modules = [m for m in modules if m is not None]
+            if not valid_modules:
+                continue
+            self.sync_actor_optimizer_with_modules(
+                valid_modules,
+                group_name=group_name,
+                tag=f"{group_name}_phase{self.phase}",
+            )
         if getattr(self, "log_std", None) is not None and self.log_std.requires_grad:
-            self._maybe_add_params_to_actor_optimizer([self.log_std], tag="log_std")
+            self._maybe_add_params_to_actor_optimizer("log_std", [self.log_std], tag="log_std")
+
+    def set_actor_learning_rate(self, lr: float) -> None:
+        set_policy_actor_lr(self, lr)
+
+    def set_actor_aux_lr_scales(
+        self,
+        lora_scale: float,
+        adapter_scale: float,
+        std_scale: Optional[float] = None,
+    ) -> None:
+        set_policy_actor_aux_scales(self, lora_scale, adapter_scale, std_scale)
+
+    def set_actor_aux_brake_scale(self, scale: float) -> None:
+        set_policy_actor_aux_brake(self, scale)
+
+    def get_actor_group_lrs(self) -> Dict[str, float]:
+        return collect_actor_group_lrs(self)
+
+    def _log_actor_param_group_overview(self) -> None:
+        if not hasattr(self, "optimizer") or self.optimizer is None:
+            return
+        lr_bits: List[str] = []
+        count_bits: List[str] = []
+        seen: Set[int] = set()
+        duplicates = False
+        for name in self._actor_group_names:
+            idx = self._actor_group_indices.get(name)
+            lr = resolve_actor_group_lr(self, name)
+            count = 0
+            if idx is not None and idx < len(self.optimizer.param_groups):
+                group = self.optimizer.param_groups[idx]
+                lr = group.get("lr", lr)
+                params = group.get("params", [])
+                count = len(params)
+                for param in params:
+                    pid = id(param)
+                    if pid in seen:
+                        duplicates = True
+                    else:
+                        seen.add(pid)
+            lr_bits.append(f"{name}={lr:.2e}")
+            count_bits.append(f"{name}={count}")
+        dup_str = "yes" if duplicates else "no"
+        print(
+            f"[Phase {getattr(self, 'phase', '?')}] actor_lrs ({', '.join(lr_bits)})"
+        )
+        print(
+            f"[Phase {getattr(self, 'phase', '?')}] actor_group_sizes ({', '.join(count_bits)}) | duplicates={dup_str}"
+        )
 
     def _log_phase_state(
         self,
@@ -798,12 +944,13 @@ class CustomUniADPolicy(ActorCriticPolicy):
             group_trainable_ids = {id(p) for p in group["params"] if getattr(p, "requires_grad", False)}
             total_ids = {id(p) for p in group["params"]}
 
-            tag = ""
-            if getattr(self, "_actor_group_idx", None) == idx:
-                tag = "actor"
-            elif getattr(self, "_critic_group_idx", None) == idx:
-                tag = "critic"
-            tag_str = f" {tag}" if tag else ""
+            tags: List[str] = []
+            for name, group_idx in self._actor_group_indices.items():
+                if group_idx == idx:
+                    tags.append(name)
+            if getattr(self, "_critic_group_idx", None) == idx:
+                tags.append("critic")
+            tag_str = f" {'/'.join(tags)}" if tags else ""
 
             print(f"  - opt_group[{idx}{tag_str}] lr={lr:.2e} trainable={len(group_trainable_ids)}/{len(total_ids)}")
 
@@ -823,37 +970,29 @@ class CustomUniADPolicy(ActorCriticPolicy):
 
     def _assert_lora_in_optimizer(self) -> None:
         lora_modules = getattr(self.mlp_extractor, "lora_modules", None)
-        if lora_modules is None or self._actor_group_idx is None:
+        lora_group_idx = self._actor_group_indices.get("lora")
+        if lora_modules is None or lora_group_idx is None:
             return
         lora_params = [p for p in lora_modules.parameters() if p.requires_grad]
         if not lora_params:
             return
         if self.optimizer is None:
             raise AssertionError("LoRA params require an initialized optimizer")
-        actor_group = self.optimizer.param_groups[self._actor_group_idx]
+        actor_group = self.optimizer.param_groups[lora_group_idx]
         actor_ids = {id(p) for p in actor_group["params"]}
         missing = {id(p) for p in lora_params} - actor_ids
         if missing:
             raise AssertionError(f"LoRA parameters missing from actor optimizer group: {len(missing)}")
-
-    def load_pretrained_weights(self, checkpoint_path: str, strict: bool = True):
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
-        self.mlp_extractor.to(self.device)
-        self.action_net.to(self.device)
-
-        if "attn_module" in checkpoint:
-            self.mlp_extractor.attn_module.load_state_dict(
-                checkpoint["attn_module"], strict=strict
-            )
-            print("✓ attn_module loaded")
-
-        if self.with_adapter and "bev_adapter" in checkpoint:
-            self.mlp_extractor.bev_adapter.load_state_dict(
-                checkpoint["bev_adapter"], strict=strict
-            )
-            print("✓ bev_adapter loaded")
-
-        if "reg_branch" in checkpoint:
-            self.action_net.load_state_dict(checkpoint["reg_branch"], strict=strict)
-            print("✓ reg_branch loaded into action_net")
-        self._sync_reference_actor(force=True)
+        
+    def _infer_device_from_obs(self, obs: Any) -> torch.device:
+        if isinstance(obs, torch.Tensor):
+            return obs.device
+        if isinstance(obs, dict):
+            for value in obs.values():
+                if isinstance(value, torch.Tensor):
+                    return value.device
+        if isinstance(obs, (list, tuple)):
+            for value in obs:
+                if isinstance(value, torch.Tensor):
+                    return value.device
+        return self.device

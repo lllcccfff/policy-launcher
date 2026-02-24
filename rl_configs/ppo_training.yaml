@@ -1,0 +1,141 @@
+# PPO Training Configuration
+# Controls PPO algorithm hyperparameters, training logistics, and phase scheduling
+
+ppo_algorithm:
+  # Rollout collection
+  n_steps: 360                    # Rollout buffer size (overridden by phase presets)
+  batch_size: 32                  # Minibatch size for SGD
+  n_epochs: 3                     # Number of epochs per update
+
+  # Discount & advantage estimation
+  gamma: 0.95                     # Discount factor
+  gae_lambda: 0.95                # GAE lambda for advantage estimation
+
+  # PPO clipping
+  clip_range: 0.05                # PPO clip range (overridden by phase)
+  clip_range_vf: null             # Value function clip range (null = no clipping)
+
+  # Loss coefficients
+  ent_coef: 0.0                   # Entropy coefficient (exploration)
+  vf_coef: 0.3                    # Value function loss coefficient
+
+  # Optimization
+  max_grad_norm: 0.4              # Gradient clipping threshold
+  grad_accum_steps: 3             # Gradient accumulation steps
+  target_kl: 0.015                # KL divergence early stopping threshold
+
+  # Exploration
+  use_sde: true                   # Use state-dependent exploration
+  sde_sample_freq: 8              # SDE noise resampling frequency
+
+training_logistics:
+  total_timesteps: 1000000        # Total training steps across all phases
+  save_freq: 10000                # Model checkpoint save frequency
+  eval_freq: 10000                # Evaluation frequency
+  eval_episodes: 5                # Number of episodes per evaluation
+  verbose: 1                      # Logging verbosity (0=none, 1=info, 2=debug)
+
+  # Episode logging
+  episode_info_print_every: 1     # Print episode diagnostics every N episodes
+  episode_info_log_to_tb: true    # Log episode info to TensorBoard
+
+learning_rate:
+  schedule: "cosine"              # LR schedule: "constant" or "cosine"
+  lr_final_ratio: 0.1             # Final LR = base_lr * ratio (for cosine)
+  base_learning_rate: 0.0001      # Base LR (used if no phase-specific LR)
+
+normalization:
+  normalize_obs: false            # Normalize observations
+  normalize_reward: false         # Normalize rewards
+  clip_obs: 10.0                  # Observation clipping threshold
+  clip_reward: 10.0               # Reward clipping threshold
+
+# Phase-specific presets (override base parameters)
+phase_presets:
+  0:  # Phase 0: Critic warmup
+    n_steps: 360
+    batch_size: 32
+    n_epochs: 4
+    clip_range: 0.035
+    ent_coef: 0.0
+    vf_coef: 0.5
+    target_kl: 0.01
+    grad_accum_steps: 6
+    actor_lr: 0.0                 # Actor frozen
+    critic_lr: 0.0001
+    log_std_bounds: [-4.5, -0.5]
+    kl_reg_coef: 0.0
+    bc_reg_coef: 0.0
+    phase_behavior:
+      train_action: false
+      train_lora: false
+      train_adapter: false
+      train_log_std: false
+
+  1:  # Phase 1: LoRA only (stabilize latent features)
+    n_steps: 360
+    batch_size: 32
+    n_epochs: 4
+    clip_range: 0.08
+    ent_coef: 0.0005
+    vf_coef: 0.4
+    target_kl: 0.04
+    grad_accum_steps: 8
+    actor_lr: 0.000005
+    critic_lr: 0.0001
+    log_std_bounds: [-4.2, -0.5]
+    kl_reg_coef: 0.0
+    bc_reg_coef: 0.0
+    phase_behavior:
+      train_action: false
+      train_lora: true
+      train_adapter: false
+      train_log_std: false
+
+  2:  # Phase 2: Action warm-up (action head + LoRA, BC anchor)
+    n_steps: 360
+    batch_size: 32
+    n_epochs: 4
+    clip_range: 0.07
+    ent_coef: 0.001
+    vf_coef: 0.35
+    target_kl: 0.04
+    grad_accum_steps: 8
+    actor_lr: 0.0000075
+    critic_lr: 0.0001
+    log_std_bounds: [-4.0, -1.5]
+    kl_reg_coef: 0.0
+    bc_reg_coef: 15.0
+    phase_behavior:
+      train_action: true
+      train_lora: true
+      train_adapter: false
+      train_log_std: false
+
+  3:  # Phase 3: Full fine-tuning (LoRA + adapter + std)
+    n_steps: 360
+    batch_size: 32
+    n_epochs: 3
+    clip_range: 0.05
+    ent_coef: 0.001
+    vf_coef: 0.35
+    target_kl: 0.05
+    grad_accum_steps: 6
+    actor_lr: 0.00001
+    critic_lr: 0.0001
+    log_std_bounds: [-4.0, -2.0]
+    kl_reg_coef: 0.0
+    bc_reg_coef: 5.0
+    phase_behavior:
+      train_action: true
+      train_lora: true
+      train_adapter: true
+      train_log_std: true
+
+# Phase schedule: list of [phase_id, portion_of_total_steps]
+# portion is cumulative (e.g., 0.05 = 5%, 0.50 = 50%, 1.0 = 100%)
+phase_schedule:
+  - [0, 0.05]   # Phase 0: first 5% of steps
+  - [1, 0.4]   # Phase 1: up to 45% total
+  - [2, 0.35]   # Phase 2: up to 80% total
+  - [3, 0.2]   # Phase 3: remaining steps

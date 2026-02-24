@@ -8,7 +8,7 @@ import math
 
 # Coordinate definitions:
 # World/Ego frame follows NuScenes/UniAD (x-forward, y-left, z-up).
-# LiDAR x-right, y-forward, z-up.
+# LiDAR shares the same axes but is rigidly translated from ego origin.
 LIDAR_OFFSET = np.array([0.5, 0.0, 1.50], dtype=np.float32)  # meters (front, left, up)
 lidar2ego = np.array([[0, 1, 0], [-1, 0, 0], [0, 0, 1]], dtype=np.float32)
 
@@ -23,7 +23,7 @@ def get_intrinsic(intrin_dict):
     K[0, 2], K[1, 2] = intrin_dict['cx'], intrin_dict['cy']
     return K
 
-def parse_uniad_obs(obs, info, cameras, img_norm_cfg):
+def parse_raw(obs, info, cameras, img_norm_cfg):
     ego_rot = np.asarray(info['ego_rot'], dtype=np.float32)
     ego_pos = np.asarray(info['ego_pos'], dtype=np.float32)
     R_world_ego = SCR.from_euler('XYZ', ego_rot).as_matrix().astype(np.float32)
@@ -39,6 +39,7 @@ def parse_uniad_obs(obs, info, cameras, img_norm_cfg):
         if len(im.shape) == 4:
             im = im[-1]
         
+        # Attention: If the image size is not 900X1600, the intrinsic params needs to be rescaled
         im = cv2.resize(im, (1600, 900))
         im_norm = mmcv.imnormalize(im, img_norm_cfg['mean'], img_norm_cfg['std'], img_norm_cfg['to_rgb'])
         imgs_shape.append(list(im_norm.shape))
@@ -47,13 +48,7 @@ def parse_uniad_obs(obs, info, cameras, img_norm_cfg):
         raw_imgs.append(im)
         l2c = info['cam_params'][cam]['l2c']
         K = get_intrinsic(info['cam_params'][cam]['intrinsic'])
-        # training gs downsample 2x, recover scale
-        rescale_K = np.copy(K)
-        rescale_K[0, 0] *= 2
-        rescale_K[0, 2] *= 2
-        rescale_K[1, 1] *= 2
-        rescale_K[1, 2] *= 2
-        l2imgs.append(rescale_K @ l2c)
+        l2imgs.append(K @ l2c)
         intrinsics.append(K) 
 
     imgs = torch.stack(imgs)[None, ...]
@@ -73,6 +68,7 @@ def parse_uniad_obs(obs, info, cameras, img_norm_cfg):
     v_quat = SCR.from_euler('XYZ', ego_rot).as_quat()[[3, 0, 1, 2]]
     can_bus[3:7] = v_quat
 
+    # UniAD 期望的 CAN 布局: [pos(3), quat(4), vel(3), acc(3), ang_vel(3), pad(2)]
     linear_vel = info['linear_velocity']
     can_bus[7:10] = R_world_ego.T @ linear_vel
 
@@ -106,3 +102,7 @@ def parse_uniad_obs(obs, info, cameras, img_norm_cfg):
     }
 
     return data
+
+
+def parse_uniad_obs(obs, info, cameras, img_norm_cfg):
+    return parse_raw(obs, info, cameras, img_norm_cfg)

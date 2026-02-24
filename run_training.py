@@ -84,15 +84,16 @@ def main():
     config = TrainingConfig()
     
     # PPO setting
-    config.total_timesteps = 75_000      
-    config.save_freq = 15_000             
+    config.total_timesteps = 60_000      
+    config.save_freq = 10_000             
     config.eval_freq = 20_000             
     config.eval_episodes = 3             
 
     config.learning_rate = 1e-5      
 
-    config.policy_device = 'cuda:0'
-    config.uniad_device = 'cuda:0'
+    config.device = 'cuda'
+    config.policy_device = config.device
+    config.uniad_device = config.device
 
     config.with_adapter = True 
     config.pretrained_planning_weights = os.path.join(project_root, "rl_framework/actor_ckpts/planning_modules.pth")
@@ -100,6 +101,9 @@ def main():
     config.normalize_reward = False
     config.training_phase = int(os.environ.get("UNIAD_TRAIN_PHASE", 0))
     config.apply_phase_defaults()
+
+    base_env_fn = create_base_env
+    eval_env_fn = None
 
     print("\nConfiguration information:")
     print(f"  Policy Device: {config.policy_device} | UniAD Device: {config.uniad_device}")
@@ -113,12 +117,6 @@ def main():
     print(f"  Output directory: {config.output_dir}")
     print(f"  Tensorboard: {config.tensorboard_log}")
 
-    base_env_fn = create_base_env
-
-    print("\nCreating simulation environment...")
-
-    eval_env_fn = create_eval_env
-
     print("\n" + "="*70)
     print(" Start training")
     print("="*70)
@@ -129,9 +127,9 @@ def main():
     print(f"    tensorboard --logdir={config.tensorboard_log}")
     print("")
 
-    model_path = os.path.join(config.checkpoint_dir, "critic_warmup_71680")
-    print(f"\n模型路径: {model_path}")
-    # model_path = None
+    # model_path = os.path.join(config.checkpoint_dir, "ppo_uniad_20000_steps.zip")
+    # print(f"\n模型路径: {model_path}")
+    model_path = None
     
     try:
         train(base_env_fn, config, eval_env_fn=eval_env_fn, model_path=model_path)
@@ -153,14 +151,8 @@ def run_evaluation():
 
     config = TrainingConfig()
 
-    model_path = os.path.join(
-        config.checkpoint_dir, 
-        "best_model/best_model.zip"
-    )
+    model_path = os.path.join(config.checkpoint_dir, "critic_warmup_40k.zip")
 
-    model_path = os.path.join(config.checkpoint_dir, "cirr4_train_model.zip")
-    # model_path = os.path.join(config.checkpoint_dir, "ppo_uniad_100000_steps.zip")
-    
     if not os.path.exists(model_path):
         print(f"\n❌ 模型文件不存在: {model_path}")
         print("\n可用的模型:")
@@ -173,8 +165,7 @@ def run_evaluation():
     print(f"\n模型路径: {model_path}")
 
     print("\n开始评估...")
-    evaluate(model_path, create_base_env, config, n_episodes=1)
-
+    evaluate(model_path, create_eval_env, config, n_episodes=1)
 
 if __name__ == "__main__":
     import argparse

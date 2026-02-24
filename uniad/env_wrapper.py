@@ -97,8 +97,8 @@ class UniADWrapper(gym.Wrapper):
         bev_h: int = 200,
         bev_w: int = 200,
         planning_steps: int = 6,
-        uniad_device: str = 'cuda:0',
-        policy_device: str = 'cuda:1'
+        uniad_device: str = 'cuda',
+        policy_device: str = 'cuda'
     ):
         """
         Args:
@@ -511,3 +511,4 @@ class UniADWrapper(gym.Wrapper):
     def _rgbf_to_bgr(self, rgb: Tuple[float, float, float]) -> Tuple[int, int, int]:
         r, g, b = rgb
         return (int(b * 255), int(g * 255), int(r * 255))
+

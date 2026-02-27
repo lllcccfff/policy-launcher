@@ -74,10 +74,36 @@ class VADHeadFeature(VADHead):
             captured["map_pos_emb"] = key_pos.permute(1, 0, 2)
             captured["map_mask"] = self._parse_padding_mask(key, key_padding_mask)
 
-        handles = [
-            self.ego_agent_decoder.register_forward_pre_hook(_agent_pre_hook, with_kwargs=True),
-            self.ego_map_decoder.register_forward_pre_hook(_map_pre_hook, with_kwargs=True),
-        ]
+        handles = []
+        using_forward_wrapper = False
+        agent_forward_backup = None
+        map_forward_backup = None
+        try:
+            handles = [
+                self.ego_agent_decoder.register_forward_pre_hook(
+                    _agent_pre_hook, with_kwargs=True
+                ),
+                self.ego_map_decoder.register_forward_pre_hook(
+                    _map_pre_hook, with_kwargs=True
+                ),
+            ]
+        except TypeError:
+            # Compatibility for older torch versions where register_forward_pre_hook
+            # does not support with_kwargs.
+            using_forward_wrapper = True
+            agent_forward_backup = self.ego_agent_decoder.forward
+            map_forward_backup = self.ego_map_decoder.forward
+
+            def _agent_forward_wrapper(*args, **kwargs):
+                _agent_pre_hook(self.ego_agent_decoder, args, kwargs)
+                return agent_forward_backup(*args, **kwargs)
+
+            def _map_forward_wrapper(*args, **kwargs):
+                _map_pre_hook(self.ego_map_decoder, args, kwargs)
+                return map_forward_backup(*args, **kwargs)
+
+            self.ego_agent_decoder.forward = _agent_forward_wrapper
+            self.ego_map_decoder.forward = _map_forward_wrapper
         try:
             outs = super().forward(
                 mlvl_feats,
@@ -88,6 +114,9 @@ class VADHeadFeature(VADHead):
         finally:
             for handle in handles:
                 handle.remove()
+            if using_forward_wrapper:
+                self.ego_agent_decoder.forward = agent_forward_backup
+                self.ego_map_decoder.forward = map_forward_backup
 
         if not isinstance(outs, dict):
             raise ValueError("VADHead forward output must be a dict")

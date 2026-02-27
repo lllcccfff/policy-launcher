@@ -31,6 +31,15 @@ CAMERA_ALIASES = {
     "CAM_BACK_RIGHT": ("CAM_BACK_RIGHT", "BACK_RIGHT"),
 }
 
+LIDAR_TO_EGO_4X4 = np.array(
+    [
+        [1, 0, 0, 0.5],
+        [0, 1, 0, 0.0],
+        [0, 0, 1, 1.5],
+        [0, 0, 0, 1.0],
+    ],
+    dtype=np.float32,
+)
 
 def get_vad_img_norm_cfg() -> Dict[str, object]:
     return {
@@ -68,6 +77,17 @@ def _to_k_4x4(cam_info: dict) -> np.ndarray:
         k4[:3, :3] = k
         return k4
     raise ValueError(f"`K` must be 3x3 or 4x4, got {k.shape}")
+
+def _to_l2c(cam_info: dict) -> np.ndarray:
+    if "l2c" in cam_info:
+        l2c = np.asarray(cam_info["l2c"], dtype=np.float32)
+        if l2c.shape != (4, 4):
+            raise ValueError(f"`l2c` must be 4x4, got {l2c.shape}")
+        return l2c
+    ego2camera = np.asarray(cam_info["ego2camera"], dtype=np.float32)
+    if ego2camera.shape != (4, 4):
+        raise ValueError(f"`ego2camera` must be 4x4, got {ego2camera.shape}")
+    return ego2camera @ LIDAR_TO_EGO_4X4
 
 
 def _build_can_bus(info) -> np.ndarray:
@@ -129,9 +149,7 @@ def parse_vad_obs(obs, info, cameras, img_norm_cfg) -> Dict[str, object]:
 
         cam_info = cam_params[info_cam]
         k4 = _to_k_4x4(cam_info)
-        l2c = np.asarray(cam_info["l2c"], dtype=np.float32)
-        if l2c.shape != (4, 4):
-            raise ValueError(f"`l2c` must be 4x4, got {l2c.shape} for {info_cam}")
+        l2c = _to_l2c(cam_info)
         lidar2img.append((k4 @ l2c).astype(np.float32))
 
     img_tensor = torch.stack(imgs, dim=0).unsqueeze(0).float().cuda()

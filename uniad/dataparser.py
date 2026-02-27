@@ -11,17 +11,36 @@ import math
 # LiDAR shares the same axes but is rigidly translated from ego origin.
 LIDAR_OFFSET = np.array([0.5, 0.0, 1.50], dtype=np.float32)  # meters (front, left, up)
 lidar2ego = np.array([[0, 1, 0], [-1, 0, 0], [0, 0, 1]], dtype=np.float32)
+LIDAR_TO_EGO_4X4 = np.array(
+    [
+        [1, 0, 0, 0.5],
+        [0, 1, 0, 0.0],
+        [0, 0, 1, 1.5],
+        [0, 0, 0, 1.0],
+    ],
+    dtype=np.float32,
+)
 
-def fov2focal(fov, pixels):
-    return pixels / (2 * math.tan(fov / 2))
+def _to_k4(cam_info):
+    k = np.asarray(cam_info["K"], dtype=np.float32)
+    if k.shape == (4, 4):
+        return k
+    if k.shape == (3, 3):
+        k4 = np.eye(4, dtype=np.float32)
+        k4[:3, :3] = k
+        return k4
+    raise ValueError(f"`K` must be 3x3 or 4x4, got {k.shape}")
 
-def get_intrinsic(intrin_dict):
-    fovx, fovy = intrin_dict['fovx'], intrin_dict['fovy']
-    h, w = intrin_dict['H'], intrin_dict['W']
-    K = np.eye(4)
-    K[0, 0], K[1, 1] = fov2focal(fovx, w), fov2focal(fovy, h)
-    K[0, 2], K[1, 2] = intrin_dict['cx'], intrin_dict['cy']
-    return K
+def _to_l2c(cam_info):
+    if "l2c" in cam_info:
+        l2c = np.asarray(cam_info["l2c"], dtype=np.float32)
+        if l2c.shape != (4, 4):
+            raise ValueError(f"`l2c` must be 4x4, got {l2c.shape}")
+        return l2c
+    ego2camera = np.asarray(cam_info["ego2camera"], dtype=np.float32)
+    if ego2camera.shape != (4, 4):
+        raise ValueError(f"`ego2camera` must be 4x4, got {ego2camera.shape}")
+    return ego2camera @ LIDAR_TO_EGO_4X4
 
 def parse_raw(obs, info, cameras, img_norm_cfg):
     ego_rot = np.asarray(info['ego_rot'], dtype=np.float32)
@@ -46,14 +65,16 @@ def parse_raw(obs, info, cameras, img_norm_cfg):
         im_norm = torch.from_numpy(im_norm).permute(2, 0, 1)
         imgs.append(im_norm)
         raw_imgs.append(im)
-        l2c = info['cam_params'][cam]['l2c']
-        K = get_intrinsic(info['cam_params'][cam]['intrinsic'])
+        cam_info = info['cam_params'][cam]
+        l2c = _to_l2c(cam_info)
+        K = _to_k4(cam_info)
         l2imgs.append(K @ l2c)
         intrinsics.append(K) 
 
     imgs = torch.stack(imgs)[None, ...]
     imgs = imgs.cuda()
-    timestamp = info['timestamp']
+    # Keep legacy behavior: `timestamp` is relative timestamp.
+    timestamp = float(info["relative_timestamp"])
     
     f2w = np.eye(4)
     f2w[:3, :3] = R_world_ego

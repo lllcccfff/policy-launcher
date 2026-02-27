@@ -3,6 +3,7 @@ from gymnasium import spaces
 import numpy as np
 import colorsys
 import torch
+import copy
 import os
 import sys
 from pathlib import Path
@@ -167,6 +168,7 @@ class UniADWrapper(gym.Wrapper):
         self.trajectory_start_offset = 0.3
         self.latest_uniad_world_traj: Optional[np.ndarray] = None
         self._ttc_warn_horizon = self._infer_ttc_warn_horizon()
+        self._prev_obs_info: Optional[Dict[str, Any]] = None
         self._reset_episode_stats()
 
     def reset(
@@ -187,11 +189,12 @@ class UniADWrapper(gym.Wrapper):
             obs, reset_info = reset_output, {}
         obs_img, obs_info = obs
         self._expert_path_info = self._extract_expert_path_info()
-        scene_name = reset_info.get("scene_name") if isinstance(reset_info, dict) else None
-        if scene_name is None:
-            scene_name = getattr(self.env, "scene_name", None)
-        if scene_name is not None:
-            obs_info['scene_token'] = str(scene_name)
+        
+        obs_info["scene_token"] = str(reset_info["scene_name"])
+        obs_info["relative_timestamp"] = float(reset_info["relative_timestamp"]) * 1e-6
+        obs_info["timestamp"] = float(reset_info["relative_timestamp"]) * 1e-6
+        obs_info["current_timestamp"] = float(reset_info["current_timestamp"]) * 1e-6
+        self._prev_obs_info = copy.deepcopy(obs_info)
         processed_obs = self._process_observation(obs_img, obs_info) # plan_query and bev_feat
         return processed_obs, obs_info
     
@@ -219,10 +222,9 @@ class UniADWrapper(gym.Wrapper):
         increments = physical_action.reshape(action.shape[0], self.planning_steps, 2)
         trajectory = torch.cumsum(increments, dim=1)
 
-        vehicle = self.env.actor_controller
         plan_info = {
-            'ego_velo': vehicle.speed,
-            'ego_steer': vehicle.steering * np.deg2rad(vehicle.max_steering)
+            "ego_velo": float(self._prev_obs_info["ego_velo"]),
+            "ego_steer": float(self._prev_obs_info["ego_steer"]),
         }
     
         acc, steer = traj2control(trajectory[0].cpu().numpy(), plan_info)
@@ -230,16 +232,14 @@ class UniADWrapper(gym.Wrapper):
 
         obs, reward, terminated, truncated, info = self.env.step(control_action)
         obs_img, obs_info = obs
-        scene_name = info.get("scene_name") if isinstance(info, dict) else None
-        if scene_name is None:
-            scene_name = getattr(self.env, "scene_name", None)
-        if scene_name is not None:
-            obs_info['scene_token'] = str(scene_name)
+        obs_info["scene_token"] = str(info["scene_name"])
+        obs_info["relative_timestamp"] = float(info["relative_timestamp"]) * 1e-6
+        obs_info["timestamp"] = float(info["relative_timestamp"]) * 1e-6
+        obs_info["current_timestamp"] = float(info["current_timestamp"]) * 1e-6
+        self._prev_obs_info = copy.deepcopy(obs_info)
 
         processed_obs = self._process_observation(obs_img, obs_info)
 
-        if info is None:
-            info = {}
         self._update_episode_stats(info, terminated, truncated)
         info.update(self._build_metric_payload(obs_info))
 

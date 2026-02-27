@@ -32,11 +32,6 @@ def _to_k4(cam_info):
     raise ValueError(f"`K` must be 3x3 or 4x4, got {k.shape}")
 
 def _to_l2c(cam_info):
-    if "l2c" in cam_info:
-        l2c = np.asarray(cam_info["l2c"], dtype=np.float32)
-        if l2c.shape != (4, 4):
-            raise ValueError(f"`l2c` must be 4x4, got {l2c.shape}")
-        return l2c
     ego2camera = np.asarray(cam_info["ego2camera"], dtype=np.float32)
     if ego2camera.shape != (4, 4):
         raise ValueError(f"`ego2camera` must be 4x4, got {ego2camera.shape}")

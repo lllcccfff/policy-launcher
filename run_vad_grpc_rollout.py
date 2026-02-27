@@ -10,16 +10,14 @@ from typing import Sequence
 import cv2
 import numpy as np
 
+from rl_framework.common.grpc_obs_adapter import unpack_ad_observation
+
 DEFAULT_VAD_CONFIG = "VAD/projects/configs/VAD/VAD_base_stage_2.py"
 DEFAULT_VAD_CKPT = "VAD/ckpts/VAD_base.pth"
 
 
-def _sync_scene_token(obs_info: dict, step_info: dict | None) -> None:
-    scene_name = step_info.get("scene_name") if step_info else None
-    if scene_name is not None:
-        obs_info["scene_token"] = str(scene_name)
-    else:
-        obs_info.setdefault("scene_token", "grpc_scene")
+def _sync_scene_token(obs_info: dict, step_info: dict) -> None:
+    obs_info["scene_token"] = str(step_info["scene_name"])
 
 
 def _to_uint8_rgb(img: np.ndarray) -> np.ndarray:
@@ -111,7 +109,8 @@ def main() -> int:
 
     try:
         for ep in range(1, args.episodes + 1):
-            (obs_img, obs_info), reset_info = env.reset()
+            obs, reset_info = env.reset()
+            obs_img, obs_info, _, _ = unpack_ad_observation(obs)
             _sync_scene_token(obs_info, reset_info)
 
             video_path = output_dir / f"episode_{ep:03d}.mp4"
@@ -134,7 +133,8 @@ def main() -> int:
                     frame_count += 1
 
                     action = agent.predict_action(obs_img, obs_info)
-                    (obs_img, obs_info), reward, terminated, truncated, step_info = env.step(action)
+                    obs, reward, terminated, truncated, step_info = env.step(action)
+                    obs_img, obs_info, _, _ = unpack_ad_observation(obs)
                     _sync_scene_token(obs_info, step_info)
 
                     total_reward += float(reward)

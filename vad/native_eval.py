@@ -9,17 +9,14 @@ import cv2
 import numpy as np
 
 from rl_framework.common.metrics import EpisodeMetricTracker
+from rl_framework.common.grpc_obs_adapter import unpack_ad_observation
 from rl_framework.vad.native_agent import FIXED_CAMERAS, VADNativeAgent
 
 METRIC_KEYS = ("NC", "DAC", "TTC", "COM", "RC")
 
 
-def _sync_scene_token(obs_info: Dict[str, Any], step_info: Dict[str, Any] | None) -> None:
-    scene_name = step_info.get("scene_name") if step_info else None
-    if scene_name is not None:
-        obs_info["scene_token"] = str(scene_name)
-    else:
-        obs_info.setdefault("scene_token", "grpc_scene")
+def _sync_scene_token(obs_info: Dict[str, Any], step_info: Dict[str, Any]) -> None:
+    obs_info["scene_token"] = str(step_info["scene_name"])
 
 
 class EpisodeGridVideoWriter:
@@ -202,11 +199,11 @@ def _as_vec(value: Any, dim: int = 3) -> np.ndarray:
 
 
 def _compose_ego_state(obs_info: Dict[str, Any]) -> Dict[str, Any]:
-    ego_pos = _as_vec(obs_info.get("ego_pos"), dim=3)
-    ego_rot = _as_vec(obs_info.get("ego_rot"), dim=3)
-    linear_vel = _as_vec(obs_info.get("linear_velocity"), dim=3)
-    linear_acc = _as_vec(obs_info.get("linear_acceleration"), dim=3)
-    angular_vel = _as_vec(obs_info.get("angular_velocity"), dim=3)
+    ego_pos = _as_vec(obs_info["ego_pos"], dim=3)
+    ego_rot = _as_vec(obs_info["ego_rot"], dim=3)
+    linear_vel = _as_vec(obs_info["linear_velocity"], dim=3)
+    linear_acc = _as_vec(obs_info["linear_acceleration"], dim=3)
+    angular_vel = _as_vec(obs_info["angular_velocity"], dim=3)
     yaw = float(ego_rot[2])
 
     cos_yaw = float(np.cos(yaw))
@@ -232,74 +229,22 @@ def _compose_ego_state(obs_info: Dict[str, Any]) -> Dict[str, Any]:
         "ego_acceleration": ego_acc.astype(np.float32).tolist(),
         "yaw": yaw,
         "angular_velocity": float(angular_vel[2]),
-        "timestamp": float(obs_info.get("timestamp", 0.0) or 0.0),
+        "timestamp": float(obs_info["timestamp"]),
     }
 
 
-def _extract_surroundings(obs_info: Dict[str, Any], step_info: Dict[str, Any] | None) -> List[Dict[str, Any]]:
-    candidates = []
-    candidates.append(step_info.get("surroundings") if step_info else None)
-    candidates.append(obs_info.get("surroundings"))
-    candidates.append(obs_info.get("neighbors"))
-
-    for raw in candidates:
-        if not isinstance(raw, list):
-            continue
-        surroundings: List[Dict[str, Any]] = []
-        for obj in raw:
-            if not isinstance(obj, dict):
-                continue
-            position = _as_vec(obj.get("position"), dim=2).tolist()
-            velocity = _as_vec(obj.get("velocity"), dim=2).tolist()
-            size = _as_vec(obj.get("size", [4.5, 1.8]), dim=2).tolist()
-            surroundings.append({"position": position, "velocity": velocity, "size": size})
-        return surroundings
-    return []
+def _extract_surroundings(obs_info: Dict[str, Any]) -> List[Dict[str, Any]]:
+    surroundings: List[Dict[str, Any]] = []
+    for obj in obs_info["surroundings"]:
+        position = _as_vec(obj["position"], dim=2).tolist()
+        velocity = _as_vec(obj["velocity"], dim=2).tolist()
+        size = _as_vec(obj["size"], dim=2).tolist()
+        surroundings.append({"position": position, "velocity": velocity, "size": size})
+    return surroundings
 
 
-def _extract_expert_path(obs_info: Dict[str, Any], step_info: Dict[str, Any] | None) -> Dict[str, Any] | None:
-    raw = obs_info.get("expert_path")
-    if raw is None and step_info:
-        raw = step_info.get("expert_path")
-    if raw is None:
-        return None
-    if isinstance(raw, dict):
-        path_xy = raw.get("path_xy")
-        if path_xy is not None:
-            pts = np.asarray(path_xy, dtype=np.float32)
-            if pts.ndim == 2 and pts.shape[0] >= 2 and pts.shape[1] >= 2:
-                pts = pts[:, :2]
-                seg_lengths = np.linalg.norm(pts[1:] - pts[:-1], axis=1)
-                cumlen = np.concatenate(([0.0], np.cumsum(seg_lengths))).astype(np.float32)
-                return {
-                    "start_xy": pts[0].tolist(),
-                    "end_xy": pts[-1].tolist(),
-                    "path_xy": pts.tolist(),
-                    "path_cumlen": cumlen.tolist(),
-                }
-        start_xy = raw.get("start_xy")
-        end_xy = raw.get("end_xy")
-        if start_xy is not None and end_xy is not None:
-            start = _as_vec(start_xy, dim=2)
-            end = _as_vec(end_xy, dim=2)
-            seg_len = float(np.linalg.norm(end - start))
-            return {
-                "start_xy": start.tolist(),
-                "end_xy": end.tolist(),
-                "path_xy": np.stack([start, end], axis=0).tolist(),
-                "path_cumlen": [0.0, seg_len],
-            }
-        return None
-
-    path_arr = np.asarray(raw, dtype=np.float32)
-    if path_arr.ndim == 1:
-        if path_arr.size >= 4 and path_arr.size % 2 == 0:
-            path_arr = path_arr.reshape(-1, 2)
-        else:
-            return None
-    if path_arr.ndim != 2 or path_arr.shape[0] < 2 or path_arr.shape[1] < 2:
-        return None
-    pts = path_arr[:, :2]
+def _extract_expert_path(obs_info: Dict[str, Any]) -> Dict[str, Any]:
+    pts = np.asarray(obs_info["expert_path"], dtype=np.float32)[:, :2]
     seg_lengths = np.linalg.norm(pts[1:] - pts[:-1], axis=1)
     cumlen = np.concatenate(([0.0], np.cumsum(seg_lengths))).astype(np.float32)
     return {
@@ -313,14 +258,13 @@ def _extract_expert_path(obs_info: Dict[str, Any], step_info: Dict[str, Any] | N
 def build_metric_payload(obs_info: Dict[str, Any], step_info: Dict[str, Any] | None) -> Dict[str, Any]:
     payload: Dict[str, Any] = {}
     if step_info:
-        for key in ("collision", "position_deviation"):
-            if key in step_info:
-                payload[key] = step_info[key]
+        if "collision" in step_info:
+            payload["collision"] = step_info["collision"]
+        if "position_deviation" in step_info:
+            payload["position_deviation"] = step_info["position_deviation"]
     payload["ego_state"] = _compose_ego_state(obs_info)
-    payload["surroundings"] = _extract_surroundings(obs_info, step_info)
-    expert_path = _extract_expert_path(obs_info, step_info)
-    if expert_path is not None:
-        payload["expert_path"] = expert_path
+    payload["surroundings"] = _extract_surroundings(obs_info)
+    payload["expert_path"] = _extract_expert_path(obs_info)
     return payload
 
 
@@ -352,7 +296,8 @@ def evaluate_vad_native(
 
     episode_records: List[Dict[str, Any]] = []
     for ep in range(1, episodes + 1):
-        (obs_img, obs_info), reset_info = env.reset()
+        obs, reset_info = env.reset()
+        obs_img, obs_info, _, _ = unpack_ad_observation(obs)
         _sync_scene_token(obs_info, reset_info)
 
         tracker = EpisodeMetricTracker()
@@ -375,7 +320,8 @@ def evaluate_vad_native(
                     writer.write(obs_img)
 
                 action = agent.predict_action(obs_img, obs_info)
-                (obs_img, obs_info), reward, terminated, truncated, step_info = env.step(action)
+                obs, reward, terminated, truncated, step_info = env.step(action)
+                obs_img, obs_info, _, _ = unpack_ad_observation(obs)
                 _sync_scene_token(obs_info, step_info)
 
                 tracker.update(build_metric_payload(obs_info, step_info))

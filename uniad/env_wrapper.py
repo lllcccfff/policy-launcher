@@ -12,6 +12,7 @@ import cv2
 from scipy.spatial.transform import Rotation as SCR
 from typing import Any, Dict, Tuple, Optional, Callable
 import numbers
+from rl_framework.common.grpc_obs_adapter import unpack_ad_observation
 from rl_framework.common.trajectory import traj2control
 import colorsys
 import matplotlib.pyplot as plt
@@ -169,6 +170,7 @@ class UniADWrapper(gym.Wrapper):
         self.latest_uniad_world_traj: Optional[np.ndarray] = None
         self._ttc_warn_horizon = self._infer_ttc_warn_horizon()
         self._prev_obs_info: Optional[Dict[str, Any]] = None
+        self._latest_surrounding_obs = []
         self._reset_episode_stats()
 
     def reset(
@@ -182,14 +184,11 @@ class UniADWrapper(gym.Wrapper):
             info: 环境信息
         """
         self._reset_episode_stats()
-        reset_output = self.env.reset(seed=seed, **kwargs)
-        if isinstance(reset_output, tuple) and len(reset_output) == 2:
-            obs, reset_info = reset_output
-        else:
-            obs, reset_info = reset_output, {}
-        obs_img, obs_info = obs
-        self._expert_path_info = self._extract_expert_path_info()
-        
+        obs, reset_info = self.env.reset(seed=seed, **kwargs)
+        obs_img, obs_info, navigation_obs, surrounding_obs = unpack_ad_observation(obs)
+        self._latest_surrounding_obs = surrounding_obs
+        self._expert_path_info = self._extract_expert_path_info(navigation_obs)
+
         obs_info["scene_token"] = str(reset_info["scene_name"])
         obs_info["relative_timestamp"] = float(reset_info["relative_timestamp"]) * 1e-6
         obs_info["timestamp"] = float(reset_info["relative_timestamp"]) * 1e-6
@@ -231,7 +230,9 @@ class UniADWrapper(gym.Wrapper):
         control_action = (steer, acc) # control action != acc and steer in info
 
         obs, reward, terminated, truncated, info = self.env.step(control_action)
-        obs_img, obs_info = obs
+        obs_img, obs_info, navigation_obs, surrounding_obs = unpack_ad_observation(obs)
+        self._latest_surrounding_obs = surrounding_obs
+        self._expert_path_info = self._extract_expert_path_info(navigation_obs)
         obs_info["scene_token"] = str(info["scene_name"])
         obs_info["relative_timestamp"] = float(info["relative_timestamp"]) * 1e-6
         obs_info["timestamp"] = float(info["relative_timestamp"]) * 1e-6
@@ -294,8 +295,8 @@ class UniADWrapper(gym.Wrapper):
         with torch.no_grad():
             model_output = self.uniad_model(return_loss=False, rescale=True, feature_extractor=True, **raw_data)
 
-        plan_query = model_output.get('plan_query', None)
-        bev_feat = model_output.get('bev_feat', None)
+        plan_query = model_output['plan_query']
+        bev_feat = model_output['bev_feat']
 
         # [P, 1, C] -> [P, C]
         plan_query = plan_query.squeeze(1).to(self.policy_device)  
@@ -329,59 +330,16 @@ class UniADWrapper(gym.Wrapper):
         else:
             return data
 
-    def _extract_expert_path_info(self):
-        actor_mgr = getattr(self.env, 'agent_managers', {}).get('actor', None) if hasattr(self.env, 'agent_managers') else None
-        observer = getattr(actor_mgr, 'observer', None) if actor_mgr is not None else None
-        nav_obs = None
-        if observer is None:
-            return None
-        if hasattr(observer, '_observers'):
-            nav_obs = observer._observers.get('navigation')
-        else:
-            nav_obs = observer
-        if nav_obs is None:
-            return None
-        start = None
-        end = None
-        path_xy = getattr(nav_obs, '_path_xy', None)
-        path_points = None
-        cumlen = None
-
-        if path_xy is not None and len(path_xy) > 0:
-            path_points = np.asarray(path_xy, dtype=np.float32)
-            start = path_points[0]
-            end = path_points[-1]
-            if path_points.shape[0] >= 2:
-                seg_lengths = np.linalg.norm(path_points[1:] - path_points[:-1], axis=1)
-                cumlen = np.concatenate(([0.0], np.cumsum(seg_lengths)))
-
-        init_state = getattr(nav_obs, 'init_state', {})
-        if start is None and isinstance(init_state, dict):
-            spawn_pos = init_state.get('spawn_position')
-            if spawn_pos is not None:
-                start = np.asarray(spawn_pos, dtype=np.float32)
-        destination = getattr(nav_obs, 'destination', None)
-        if end is None:
-            if destination is not None:
-                end = np.asarray(destination, dtype=np.float32)
-            elif isinstance(init_state, dict):
-                dest = init_state.get('destination')
-                if dest is not None:
-                    end = np.asarray(dest, dtype=np.float32)
-        if path_points is None and start is not None and end is not None:
-            path_points = np.stack([start, end], axis=0)
-            seg_len = np.linalg.norm(end - start)
-            cumlen = np.array([0.0, seg_len], dtype=np.float32)
-        if start is None or end is None:
-            return None
-        info = {
-            'start_xy': start[:2].astype(np.float32).tolist(),
-            'end_xy': end[:2].astype(np.float32).tolist(),
+    def _extract_expert_path_info(self, navigation_obs: Dict[str, Any]):
+        path_xy = np.asarray(navigation_obs["waypoint"], dtype=np.float32)[:, :2]
+        seg_lengths = np.linalg.norm(path_xy[1:] - path_xy[:-1], axis=1)
+        cumlen = np.concatenate(([0.0], np.cumsum(seg_lengths)))
+        return {
+            "start_xy": path_xy[0].astype(np.float32).tolist(),
+            "end_xy": path_xy[-1].astype(np.float32).tolist(),
+            "path_xy": path_xy.astype(np.float32).tolist(),
+            "path_cumlen": cumlen.astype(np.float32).tolist(),
         }
-        if path_points is not None and cumlen is not None:
-            info['path_xy'] = path_points[:, :2].astype(np.float32).tolist()
-            info['path_cumlen'] = cumlen.astype(np.float32).tolist()
-        return info
 
     def _build_metric_payload(self, obs_info: Dict[str, Any]) -> Dict[str, Any]:
         payload = {
@@ -457,38 +415,33 @@ class UniADWrapper(gym.Wrapper):
             return 2.0
 
     def _compose_ego_state(self, obs_info: Dict[str, Any]) -> Dict[str, Any]:
-        ego_pos = np.asarray(obs_info.get('ego_pos', np.zeros(3, dtype=np.float32)), dtype=np.float32)
-        ego_rot = np.asarray(obs_info.get('ego_rot', np.zeros(3, dtype=np.float32)), dtype=np.float32)
+        ego_pos = np.asarray(obs_info['ego_pos'], dtype=np.float32)
+        ego_rot = np.asarray(obs_info['ego_rot'], dtype=np.float32)
         R_world_ego = SCR.from_euler('XYZ', ego_rot).as_matrix().astype(np.float32)
-        yaw = float(ego_rot[2]) if ego_rot.shape[0] > 2 else 0.0
+        yaw = float(ego_rot[2])
 
-        linear_vel = np.asarray(obs_info.get('linear_velocity', np.zeros(3, dtype=np.float32)), dtype=np.float32)
+        linear_vel = np.asarray(obs_info['linear_velocity'], dtype=np.float32)
         ego_vel = R_world_ego.T @ linear_vel
-        linear_acc = np.asarray(obs_info.get('linear_acceleration', np.zeros(3, dtype=np.float32)), dtype=np.float32)
+        linear_acc = np.asarray(obs_info['linear_acceleration'], dtype=np.float32)
         ego_acc = R_world_ego.T @ linear_acc
-        angular_velocity = np.asarray(obs_info.get('angular_velocity', np.zeros(3, dtype=np.float32)), dtype=np.float32)
+        angular_velocity = np.asarray(obs_info['angular_velocity'], dtype=np.float32)
 
         return {
             'position_world': ego_pos[:2].astype(np.float32).tolist(),
             'ego_velocity': ego_vel[:2].astype(np.float32).tolist(),
             'ego_acceleration': ego_acc[:2].astype(np.float32).tolist(),
             'yaw': yaw,
-            'angular_velocity': float(angular_velocity[2]) if angular_velocity.shape[0] > 2 else 0.0,
-            'timestamp': float(obs_info.get('timestamp', 0.0))
+            'angular_velocity': float(angular_velocity[2]),
+            'timestamp': float(obs_info['timestamp'])
         }
 
     def _compose_surroundings(self) -> list:
-        actor_mgr = getattr(self.env, 'agent_managers', {}).get('actor', None) if hasattr(self.env, 'agent_managers') else None
-        observer = getattr(actor_mgr, 'observer', None) if actor_mgr is not None else None
-        surrounding_observer = observer._observers.get('surrounding')
-        surrounding_obs = surrounding_observer.observe()
         neighbors = []
-        
-        for obj in surrounding_obs:
+        for obj in self._latest_surrounding_obs:
             neighbors.append({
                 'position': obj['position'],
                 'velocity': obj['velocity'],
-                'size': obj.get('size', [4.5, 1.8])
+                'size': obj['size']
             })
         return neighbors
 

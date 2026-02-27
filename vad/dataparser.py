@@ -79,11 +79,6 @@ def _to_k_4x4(cam_info: dict) -> np.ndarray:
     raise ValueError(f"`K` must be 3x3 or 4x4, got {k.shape}")
 
 def _to_l2c(cam_info: dict) -> np.ndarray:
-    if "l2c" in cam_info:
-        l2c = np.asarray(cam_info["l2c"], dtype=np.float32)
-        if l2c.shape != (4, 4):
-            raise ValueError(f"`l2c` must be 4x4, got {l2c.shape}")
-        return l2c
     ego2camera = np.asarray(cam_info["ego2camera"], dtype=np.float32)
     if ego2camera.shape != (4, 4):
         raise ValueError(f"`ego2camera` must be 4x4, got {ego2camera.shape}")
@@ -121,8 +116,6 @@ def _build_can_bus(info) -> np.ndarray:
 
 def parse_vad_obs(obs, info, cameras, img_norm_cfg) -> Dict[str, object]:
     del cameras
-    if img_norm_cfg is None:
-        img_norm_cfg = get_vad_img_norm_cfg()
 
     cam_params = info["cam_params"]
     imgs = []
@@ -155,13 +148,9 @@ def parse_vad_obs(obs, info, cameras, img_norm_cfg) -> Dict[str, object]:
     img_tensor = torch.stack(imgs, dim=0).unsqueeze(0).float().cuda()
     can_bus = _build_can_bus(info)
 
-    scene_token = info.get("scene_token", info.get("scene_name"))
-    if scene_token is None:
-        raise KeyError("Missing `scene_token` (or `scene_name`) in info")
-
     cmd_vec = command_to_one_hot(int(info["command"]), img_tensor.device)
     img_meta = {
-        "scene_token": str(scene_token),
+        "scene_token": str(info["scene_token"]),
         "can_bus": can_bus,
         "img_shape": img_shape,
         "lidar2img": lidar2img,

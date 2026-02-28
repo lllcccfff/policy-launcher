@@ -1,9 +1,9 @@
 import copy
-import math
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 import torch
 from torch import nn
+import torch.nn.functional as F
 from torch.nn.utils import parametrize
 from gymnasium import spaces
 
@@ -22,6 +22,101 @@ from rl_framework.rl_utils.lr_utils import (
     set_policy_actor_lr,
     update_policy_optimizer_lrs,
 )
+
+
+class VADActionHead(nn.Module):
+    """
+    Action head equivalent to the original VAD block:
+    ego_feats -> ego_fut_decoder -> mode select by ego_fut_cmd -> action_mean.
+    """
+
+    def __init__(
+        self,
+        ego_fut_decoder: nn.Module,
+        ego_fut_mode: int,
+        planning_steps: int,
+        action_dim: int,
+    ):
+        super().__init__()
+        self.ego_fut_decoder = ego_fut_decoder
+        self.ego_fut_mode = int(ego_fut_mode)
+        self.planning_steps = int(planning_steps)
+        self.action_dim = int(action_dim)
+
+    def forward(
+        self,
+        ego_feats: torch.Tensor,
+        ego_fut_cmd: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        ego_fut_preds = self.ego_fut_decoder(ego_feats)
+        batch_size = ego_fut_preds.shape[0]
+        ego_fut_preds = ego_fut_preds.reshape(
+            batch_size,
+            self.ego_fut_mode,
+            self.planning_steps,
+            2,
+        )
+        cmd = ego_fut_cmd.to(dtype=ego_fut_preds.dtype)
+        selected = torch.sum(ego_fut_preds * cmd[..., None, None], dim=1)
+        action_mean = selected.reshape(batch_size, self.action_dim)
+        # Actor latent is the fused ego token before regression, matching caller semantics.
+        latent_action = ego_feats.squeeze(1)
+        return action_mean, latent_action
+
+
+class FrozenReferenceActor(nn.Module):
+    """
+    Frozen copy of the VAD actor path:
+    features_extractor -> ego_agent_decoder -> ego_map_decoder -> action_net.
+    """
+
+    def __init__(
+        self,
+        features_extractor: nn.Module,
+        ego_agent_decoder: nn.Module,
+        ego_map_decoder: nn.Module,
+        action_net: nn.Module,
+        extract_observation_tensors: Callable[[Dict[str, torch.Tensor]], Dict[str, torch.Tensor]],
+        device: torch.device,
+    ):
+        super().__init__()
+        self.features_extractor = copy.deepcopy(features_extractor)
+        self.ego_agent_decoder = copy.deepcopy(ego_agent_decoder)
+        self.ego_map_decoder = copy.deepcopy(ego_map_decoder)
+        self.action_net = copy.deepcopy(action_net)
+        self._extract_observation_tensors = extract_observation_tensors
+        self.to(device)
+        self.eval()
+        for param in self.parameters():
+            param.requires_grad = False
+
+    @torch.no_grad()
+    def forward(self, obs: Any) -> torch.Tensor:
+        features = self.features_extractor(obs)
+        tensors = self._extract_observation_tensors(features)
+
+        ego_agent_query = self.ego_agent_decoder(
+            query=tensors["ego_query"].permute(1, 0, 2),
+            key=tensors["agent_query"].permute(1, 0, 2),
+            value=tensors["agent_query"].permute(1, 0, 2),
+            query_pos=tensors["ego_pos_emb"].permute(1, 0, 2),
+            key_pos=tensors["agent_pos_emb"].permute(1, 0, 2),
+            key_padding_mask=tensors["agent_mask"],
+        )
+        ego_map_query = self.ego_map_decoder(
+            query=ego_agent_query,
+            key=tensors["map_query"].permute(1, 0, 2),
+            value=tensors["map_query"].permute(1, 0, 2),
+            query_pos=tensors["ego_pos_emb"].permute(1, 0, 2),
+            key_pos=tensors["map_pos_emb"].permute(1, 0, 2),
+            key_padding_mask=tensors["map_mask"],
+        )
+
+        ego_feats = torch.cat(
+            [ego_agent_query.permute(1, 0, 2), ego_map_query.permute(1, 0, 2)], dim=-1
+        )
+        action_mean, _ = self.action_net(ego_feats, tensors["ego_fut_cmd"])
+        return action_mean
 
 
 class CustomVADPolicy(ActorCriticPolicy):
@@ -60,8 +155,6 @@ class CustomVADPolicy(ActorCriticPolicy):
         self.planning_steps = int(planning_steps)
         self.ego_fut_mode = int(ego_fut_mode)
         self.action_dim = self.planning_steps * 2
-        self.low_noise_sigma = 0.05
-        self.high_noise_sigma = 0.5
         self.phase = int(phase)
 
         if planning_weights is None:
@@ -94,6 +187,7 @@ class CustomVADPolicy(ActorCriticPolicy):
         self.bc_reg_coef = float(bc_reg_coef)
         self.phase_behavior: Dict[str, Any] = {}
         self._last_reg_loss: Optional[torch.Tensor] = None
+        self.reference_actor: Optional[FrozenReferenceActor] = None
 
         self._lora_injected = False
         self.lora_modules = None
@@ -108,8 +202,6 @@ class CustomVADPolicy(ActorCriticPolicy):
         self._actor_group_param_ids: Dict[str, Set[int]] = {
             name: set() for name in self._actor_group_names
         }
-
-        self._ensure_log_std_bounds()
 
         kwargs["ortho_init"] = False
         kwargs["features_extractor_class"] = ADFeaturesExtractor
@@ -140,7 +232,7 @@ class CustomVADPolicy(ActorCriticPolicy):
 
     def _build_mlp_extractor(self) -> None:
         self.mlp_extractor = nn.Identity()
-        self.mlp_extractor.latent_dim_pi = self.action_dim
+        self.mlp_extractor.latent_dim_pi = self.embed_dims * 2
         self.mlp_extractor.latent_dim_vf = self.embed_dims
 
     def _build(self, lr_schedule: Callable[[float], float]) -> None:
@@ -148,7 +240,12 @@ class CustomVADPolicy(ActorCriticPolicy):
         self.lora_modules = nn.ModuleList()
         self._build_mlp_extractor()
         self._build_planning_modules()
-        self.action_net = nn.Identity()
+        self.action_net = VADActionHead(
+            ego_fut_decoder=self.ego_fut_decoder,
+            ego_fut_mode=self.ego_fut_mode,
+            planning_steps=self.planning_steps,
+            action_dim=self.action_dim,
+        )
         self.value_adapter = nn.Sequential(
             nn.LayerNorm(self.embed_dims),
             nn.Linear(self.embed_dims, self.embed_dims * 2),
@@ -175,23 +272,35 @@ class CustomVADPolicy(ActorCriticPolicy):
         if not isinstance(self.action_dist, StateDependentNoiseDistribution):
             raise ValueError("CustomVADPolicy only supports gSDE (StateDependentNoiseDistribution)")
 
-        latent_dim_pi = self.action_dim
-        std_basis_dim = 2 if (self.sde_full_std and self.action_dim > 1) else 1
+        latent_dim_pi = int(self.mlp_extractor.latent_dim_pi)
         if self.sde_full_std:
-            log_std_shape = (latent_dim_pi, std_basis_dim)
+            log_std_shape = (latent_dim_pi, 2)
         else:
             log_std_shape = (latent_dim_pi, 1)
-            std_basis_dim = 1
         self.log_std = nn.Parameter(torch.full(log_std_shape, self.sde_log_std_init))
         self.action_dist.latent_sde_dim = latent_dim_pi
         self.register_buffer(
             "std_expansion_matrix",
-            self._create_std_expansion_matrix(std_basis_dim),
+            self._create_std_expansion_matrix(),
         )
         self.action_dist.sample_weights(self._expanded_log_std())
 
         self._apply_phase_constraints()
         self._setup_optimizer_once()
+        self._sync_reference_actor(force=True)
+
+    def _sync_reference_actor(self, force: bool = False) -> None:
+        if not force and self.reference_actor is not None:
+            return
+        self.reference_actor = FrozenReferenceActor(
+            self.features_extractor,
+            self.ego_agent_decoder,
+            self.ego_map_decoder,
+            self.action_net,
+            self._extract_observation_tensors,
+            device=self.device,
+        )
+        self.reference_actor.eval()
 
     def _build_planning_modules(self) -> None:
         required = [
@@ -242,23 +351,8 @@ class CustomVADPolicy(ActorCriticPolicy):
                 f"planning_steps mismatch: config={self.planning_steps}, planning={planning_ts}"
             )
 
-    def _ensure_log_std_bounds(self) -> None:
-        if self.log_std_bounds is None:
-            return
-        desired_low = math.log(max(1e-6, self.low_noise_sigma))
-        desired_high = math.log(max(self.low_noise_sigma, self.high_noise_sigma))
-        lo, hi = self.log_std_bounds
-        if lo > desired_low:
-            lo = desired_low
-        if hi < desired_high:
-            hi = desired_high
-        self.log_std_bounds = (lo, hi)
-
-    def _create_std_expansion_matrix(self, std_basis_dim: int) -> torch.Tensor:
-        matrix = torch.zeros(std_basis_dim, self.action_dim, dtype=torch.float32)
-        if std_basis_dim <= 1:
-            matrix[:, :] = 1.0
-            return matrix
+    def _create_std_expansion_matrix(self) -> torch.Tensor:
+        matrix = torch.zeros(2, self.action_dim, dtype=torch.float32)
         matrix[0, ::2] = 1.0
         if self.action_dim > 1:
             matrix[1, 1::2] = 1.0
@@ -374,7 +468,7 @@ class CustomVADPolicy(ActorCriticPolicy):
 
     def _decode_action_mean_and_value(
         self, features: Dict[str, torch.Tensor]
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         obs = self._extract_observation_tensors(features)
 
         ego_agent_query = self.ego_agent_decoder(
@@ -396,19 +490,12 @@ class CustomVADPolicy(ActorCriticPolicy):
 
         ego_feats = torch.cat(
             [ego_agent_query.permute(1, 0, 2), ego_map_query.permute(1, 0, 2)], dim=-1
-        )
-        ego_fut_preds = self.ego_fut_decoder(ego_feats)
-        batch_size = ego_fut_preds.shape[0]
-        ego_fut_preds = ego_fut_preds.reshape(batch_size, self.ego_fut_mode, self.planning_steps, 2)
-        cmd = obs["ego_fut_cmd"].to(dtype=ego_fut_preds.dtype)
-        selected = torch.sum(ego_fut_preds * cmd[..., None, None], dim=1)
-        action_mean = selected.reshape(batch_size, self.action_dim)
+        )  # latent action
 
         ego_map_out = ego_map_query.permute(1, 0, 2)
         value_in = ego_map_out.squeeze(1).detach()
-        latent_vf = self.value_adapter(value_in)
-        values = self.value_net(latent_vf)
-        return action_mean, values
+        latent_value = self.value_adapter(value_in)
+        return ego_feats, latent_value, obs["ego_fut_cmd"]
 
     def extract_features(self, obs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         return self.features_extractor(obs)
@@ -421,11 +508,16 @@ class CustomVADPolicy(ActorCriticPolicy):
         norm_mean = torch.clamp(norm_mean, -1.0 + eps, 1.0 - eps)
         return torch.atanh(norm_mean)
 
-    def _get_action_dist_from_latent(self, latent_pi: torch.Tensor):
-        pre_squash_mean = self._physical_mean_to_pre_squash(latent_pi)
+    def _get_action_dist_from_latent(
+        self,
+        action_mean: torch.Tensor,
+        latent_action: torch.Tensor,
+    ):
+        pre_squash_mean = self._physical_mean_to_pre_squash(action_mean)
         if not isinstance(self.action_dist, StateDependentNoiseDistribution):
             raise ValueError("Only gSDE mode (StateDependentNoiseDistribution) is supported")
-        latent_sde = self.sde_latent_scale * pre_squash_mean
+        # Match UniAD behavior: use actor latent (not pre-squash mean) for latent_sde.
+        latent_sde = self.sde_latent_scale * latent_action
         return self.action_dist.proba_distribution(
             pre_squash_mean,
             self._expanded_log_std(),
@@ -440,20 +532,24 @@ class CustomVADPolicy(ActorCriticPolicy):
 
     def forward(self, obs: Dict[str, torch.Tensor], deterministic: bool = False):
         features = self.extract_features(obs)
-        action_mean, values = self._decode_action_mean_and_value(features)
-        distribution = self._get_action_dist_from_latent(action_mean)
+        latent_action, latent_value, ego_fut_cmd = self._decode_action_mean_and_value(features)
+        action_mean, action_dist_latent = self.action_net(latent_action, ego_fut_cmd)
+        values = self.value_net(latent_value)
+        distribution = self._get_action_dist_from_latent(action_mean, action_dist_latent)
         actions = distribution.get_actions(deterministic=deterministic)
         log_prob = distribution.log_prob(actions)
         return actions, values, log_prob
 
     def get_distribution(self, obs: Dict[str, torch.Tensor]):
         features = self.extract_features(obs)
-        action_mean, _ = self._decode_action_mean_and_value(features)
-        return self._get_action_dist_from_latent(action_mean)
+        latent_action, _, ego_fut_cmd = self._decode_action_mean_and_value(features)
+        action_mean, action_dist_latent = self.action_net(latent_action, ego_fut_cmd)
+        return self._get_action_dist_from_latent(action_mean, action_dist_latent)
 
     def predict_values(self, obs: torch.Tensor) -> torch.Tensor:
         features = self.extract_features(obs)
-        _, values = self._decode_action_mean_and_value(features)
+        _, latent_value, _ = self._decode_action_mean_and_value(features)
+        values = self.value_net(latent_value)
         return values
 
     def _predict(self, observation: torch.Tensor, deterministic: bool = False) -> torch.Tensor:
@@ -464,11 +560,13 @@ class CustomVADPolicy(ActorCriticPolicy):
         self, obs: torch.Tensor, actions: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         features = self.extract_features(obs)
-        action_mean, values = self._decode_action_mean_and_value(features)
-        distribution = self._get_action_dist_from_latent(action_mean)
+        latent_action, latent_value, ego_fut_cmd = self._decode_action_mean_and_value(features)
+        action_mean, action_dist_latent = self.action_net(latent_action, ego_fut_cmd)
+        values = self.value_net(latent_value)
+        distribution = self._get_action_dist_from_latent(action_mean, action_dist_latent)
         log_prob = distribution.log_prob(actions)
         entropy = distribution.entropy()
-        self._last_reg_loss = torch.zeros((), device=values.device)
+        self._last_reg_loss = self.regularization_loss(obs, action_mean)
         return values, log_prob, entropy
 
     def pop_regularization_loss(self) -> torch.Tensor:
@@ -477,6 +575,32 @@ class CustomVADPolicy(ActorCriticPolicy):
         value = self._last_reg_loss
         self._last_reg_loss = None
         return value
+
+    def regularization_loss(
+        self, obs: Any, action_mean: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        if self.bc_reg_coef <= 0 or self.reference_actor is None:
+            device = action_mean.device if action_mean is not None else self.device
+            return torch.zeros((), device=device)
+
+        if action_mean is None:
+            features = self.extract_features(obs)
+            latent_action, _, ego_fut_cmd = self._decode_action_mean_and_value(features)
+            action_mean, _ = self.action_net(latent_action, ego_fut_cmd)
+
+        with torch.no_grad():
+            ref_mean_phys = self.reference_actor(obs)
+
+        scale = self.env_action_scale.to(action_mean.device)
+        bias = self.env_action_bias.to(action_mean.device)
+        eps = 1e-6
+
+        curr_mean_norm = (action_mean - bias) / (scale + eps)
+        ref_mean_norm = (ref_mean_phys - bias) / (scale + eps)
+        curr_mean_norm = curr_mean_norm.clamp(-1.0, 1.0)
+        ref_mean_norm = ref_mean_norm.clamp(-1.0, 1.0)
+
+        return self.bc_reg_coef * F.mse_loss(curr_mean_norm, ref_mean_norm)
 
     def _resolve_attention_module(
         self,
@@ -600,6 +724,7 @@ class CustomVADPolicy(ActorCriticPolicy):
         self._set_module_trainability(self.ego_agent_decoder, False)
         self._set_module_trainability(self.ego_map_decoder, False)
         self._set_module_trainability(self.ego_fut_decoder, self.train_action)
+        self._set_module_trainability(self.action_net, self.train_action)
         self._set_module_trainability(self.lora_modules, self.train_lora)
         self._set_module_trainability(self.value_adapter, True)
         self._set_module_trainability(self.value_net, True)
@@ -617,6 +742,8 @@ class CustomVADPolicy(ActorCriticPolicy):
             self.ego_map_decoder.eval()
         if not self._has_trainable_params(self.ego_fut_decoder):
             self.ego_fut_decoder.eval()
+        if not self._has_trainable_params(self.action_net):
+            self.action_net.eval()
         if len(self.lora_modules) > 0 and not self._has_trainable_params(self.lora_modules):
             for module in self.lora_modules:
                 module.eval()
@@ -632,7 +759,7 @@ class CustomVADPolicy(ActorCriticPolicy):
                     continue
                 groups[name].append(param)
 
-        _extend("action", self.ego_fut_decoder)
+        _extend("action", self.action_net)
         _extend("lora", self.lora_modules)
         if not trainable_only or self.log_std.requires_grad:
             groups["log_std"].append(self.log_std)
@@ -746,7 +873,7 @@ class CustomVADPolicy(ActorCriticPolicy):
 
     def iter_phase_parameter_groups(self):
         return [
-            ("action", self.train_action, list(self.ego_fut_decoder.parameters())),
+            ("action", self.train_action, list(self.action_net.parameters())),
             ("lora", self.train_lora, list(self.lora_modules.parameters())),
             ("adapter", False, []),
             ("log_std", self.train_log_std, [self.log_std]),
@@ -759,7 +886,7 @@ class CustomVADPolicy(ActorCriticPolicy):
         if not hasattr(self, "optimizer") or self.optimizer is None:
             return
         self.sync_actor_optimizer_with_modules(
-            [self.ego_fut_decoder],
+            [self.action_net],
             group_name="action",
             tag=f"action_phase{self.phase}",
         )
@@ -813,7 +940,6 @@ class CustomVADPolicy(ActorCriticPolicy):
             self.actor_std_lr_ratio = max(0.0, float(actor_std_lr_ratio))
         self.critic_lr = float(critic_lr)
         self.log_std_bounds = log_std_bounds
-        self._ensure_log_std_bounds()
         self.kl_reg_coef = float(kl_reg_coef)
         self.bc_reg_coef = float(bc_reg_coef)
         self.phase_behavior = (phase_behavior or {}).copy()

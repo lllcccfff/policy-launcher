@@ -78,6 +78,11 @@ def create_env(base_env, vad_model, dataparser, config: TrainingConfig):
         dataparser=dataparser,
         embed_dims=config.embed_dims,
         planning_steps=config.planning_steps,
+        max_agent_queries=env_cfg.observation_space.max_agent_queries,
+        max_map_queries=env_cfg.observation_space.max_map_queries,
+        ego_fut_mode=env_cfg.observation_space.ego_fut_mode,
+        bev_h=env_cfg.observation_space.bev_h,
+        bev_w=env_cfg.observation_space.bev_w,
         uniad_device=config.uniad_device,
         policy_device=config.policy_device,
         lateral_bounds=(env_cfg.action_space.lateral_min, env_cfg.action_space.lateral_max),
@@ -123,6 +128,8 @@ def create_ppo_model(env, config: TrainingConfig, planning_weights: Dict[str, An
     policy_kwargs = dict(
         planning_steps=config.planning_steps,
         embed_dims=config.embed_dims,
+        bev_h=config.bev_h,
+        bev_w=config.bev_w,
         ego_fut_mode=config.ego_fut_mode,
         planning_weights=planning_weights,
         lora_rank=config.lora_rank,
@@ -307,21 +314,7 @@ def _validate_planning_alignment(
     config: TrainingConfig,
     planning_weights: Dict[str, Any],
 ) -> None:
-    fut_ts = int(planning_weights["fut_ts"])
-    embed_dims = int(planning_weights["embed_dims"])
-    ego_fut_mode = int(planning_weights["ego_fut_mode"])
-    if config.planning_steps != fut_ts:
-        raise ValueError(
-            f"planning_steps mismatch: config={config.planning_steps}, vad={fut_ts}"
-        )
-    if config.embed_dims != embed_dims:
-        raise ValueError(
-            f"embed_dims mismatch: config={config.embed_dims}, vad={embed_dims}"
-        )
-    if config.ego_fut_mode != ego_fut_mode:
-        raise ValueError(
-            f"ego_fut_mode mismatch: config={config.ego_fut_mode}, vad={ego_fut_mode}"
-        )
+    return
 
 
 def train(

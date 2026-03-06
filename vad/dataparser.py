@@ -2,6 +2,7 @@ import math
 from typing import Dict
 
 import mmcv
+import cv2
 import numpy as np
 import torch
 from scipy.spatial.transform import Rotation as SCR
@@ -121,6 +122,7 @@ def parse_vad_obs(obs, info, cameras, img_norm_cfg) -> Dict[str, object]:
     imgs = []
     img_shape = []
     lidar2img = []
+    scale_factor = 0.8
 
     for cam in CAMERA_ORDER:
         obs_cam = _resolve_camera_key(obs, cam)
@@ -130,6 +132,11 @@ def parse_vad_obs(obs, info, cameras, img_norm_cfg) -> Dict[str, object]:
         if len(im.shape) == 4:
             im = im[-1]
         im = np.asarray(im, dtype=np.float32)
+        if scale_factor != 1.0:
+            h, w = im.shape[:2]
+            new_w = int(round(w * scale_factor))
+            new_h = int(round(h * scale_factor))
+            im = cv2.resize(im, (new_w, new_h))
 
         im_norm = mmcv.imnormalize(
             im,
@@ -142,6 +149,10 @@ def parse_vad_obs(obs, info, cameras, img_norm_cfg) -> Dict[str, object]:
 
         cam_info = cam_params[info_cam]
         k4 = _to_k_4x4(cam_info)
+        if scale_factor != 1.0:
+            k4 = k4.copy()
+            k4[0, :] *= scale_factor
+            k4[1, :] *= scale_factor
         l2c = _to_l2c(cam_info)
         lidar2img.append((k4 @ l2c).astype(np.float32))
 

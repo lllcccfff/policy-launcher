@@ -147,9 +147,4 @@ def extract_vad_planning_weights(model) -> Dict[str, Any]:
         "ego_agent_decoder_template": copy.deepcopy(head.ego_agent_decoder).cpu(),
         "ego_map_decoder_template": copy.deepcopy(head.ego_map_decoder).cpu(),
         "ego_fut_decoder_template": copy.deepcopy(head.ego_fut_decoder).cpu(),
-        "ego_fut_mode": int(head.ego_fut_mode),
-        "fut_ts": int(head.fut_ts),
-        "embed_dims": int(head.embed_dims),
-        "num_agent_queries": int(head.num_query),
-        "num_map_queries": int(head.map_num_vec),
     }

@@ -59,17 +59,19 @@ class VADHeadFeature(VADHead):
             if query is None or query_pos is None or key is None or key_pos is None:
                 raise ValueError("ego_agent_decoder received incomplete kwargs")
             captured["ego_query"] = query.permute(1, 0, 2)
-            captured["ego_pos_emb"] = query_pos.permute(1, 0, 2)
+            captured["ego_agent_pos_emb"] = query_pos.permute(1, 0, 2)
             captured["agent_query"] = key.permute(1, 0, 2)
             captured["agent_pos_emb"] = key_pos.permute(1, 0, 2)
             captured["agent_mask"] = self._parse_padding_mask(key, key_padding_mask)
 
         def _map_pre_hook(module, args, kwargs):
+            query_pos = kwargs.get("query_pos")
             key = kwargs.get("key")
             key_pos = kwargs.get("key_pos")
             key_padding_mask = kwargs.get("key_padding_mask")
-            if key is None or key_pos is None:
+            if query_pos is None or key is None or key_pos is None:
                 raise ValueError("ego_map_decoder received incomplete kwargs")
+            captured["ego_map_pos_emb"] = query_pos.permute(1, 0, 2)
             captured["map_query"] = key.permute(1, 0, 2)
             captured["map_pos_emb"] = key_pos.permute(1, 0, 2)
             captured["map_mask"] = self._parse_padding_mask(key, key_padding_mask)
@@ -121,18 +123,20 @@ class VADHeadFeature(VADHead):
         if not isinstance(outs, dict):
             raise ValueError("VADHead forward output must be a dict")
 
-        captured["bev_embed"] = outs.get("bev_embed")
-        captured["ego_fut_preds"] = outs.get("ego_fut_preds")
+        captured["bev_embed"] = outs["bev_embed"]
+        captured["ego_fut_preds"] = outs["ego_fut_preds"]
 
         required = [
             "ego_query",
-            "ego_pos_emb",
+            "ego_agent_pos_emb",
+            "ego_map_pos_emb",
             "agent_query",
             "agent_pos_emb",
             "agent_mask",
             "map_query",
             "map_pos_emb",
             "map_mask",
+            "bev_embed",
         ]
         missing = [key for key in required if key not in captured]
         if missing:
@@ -285,7 +289,7 @@ class VADFeature(VAD):
             feature_extractor=feature_extractor,
         )
         if feature_extractor:
-            return outs.get("bev_embed"), outs, {}
+            return outs["bev_embed"], outs, {}
 
         bbox_list = self.pts_bbox_head.get_bboxes(outs)
 
@@ -325,4 +329,4 @@ class VADFeature(VAD):
             bbox_result["ego_fut_cmd"] = cmd_for_sample.detach().cpu()
             bbox_results.append(bbox_result)
 
-        return outs.get("bev_embed"), bbox_results, {}
+        return outs["bev_embed"], bbox_results, {}

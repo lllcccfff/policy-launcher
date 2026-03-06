@@ -1,4 +1,5 @@
 import copy
+import math
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 import torch
@@ -99,7 +100,7 @@ class FrozenReferenceActor(nn.Module):
             query=tensors["ego_query"].permute(1, 0, 2),
             key=tensors["agent_query"].permute(1, 0, 2),
             value=tensors["agent_query"].permute(1, 0, 2),
-            query_pos=tensors["ego_pos_emb"].permute(1, 0, 2),
+            query_pos=tensors["ego_agent_pos_emb"].permute(1, 0, 2),
             key_pos=tensors["agent_pos_emb"].permute(1, 0, 2),
             key_padding_mask=tensors["agent_mask"],
         )
@@ -107,7 +108,7 @@ class FrozenReferenceActor(nn.Module):
             query=ego_agent_query,
             key=tensors["map_query"].permute(1, 0, 2),
             value=tensors["map_query"].permute(1, 0, 2),
-            query_pos=tensors["ego_pos_emb"].permute(1, 0, 2),
+            query_pos=tensors["ego_map_pos_emb"].permute(1, 0, 2),
             key_pos=tensors["map_pos_emb"].permute(1, 0, 2),
             key_padding_mask=tensors["map_mask"],
         )
@@ -127,6 +128,8 @@ class CustomVADPolicy(ActorCriticPolicy):
         lr_schedule: Callable[[float], float],
         planning_steps: int = 6,
         embed_dims: int = 256,
+        bev_h: Optional[int] = None,
+        bev_w: Optional[int] = None,
         ego_fut_mode: int = 3,
         planning_weights: Optional[Dict[str, Any]] = None,
         lora_rank: int = 8,
@@ -160,6 +163,10 @@ class CustomVADPolicy(ActorCriticPolicy):
         if planning_weights is None:
             raise ValueError("planning_weights must be provided for CustomVADPolicy")
         self.planning_weights = planning_weights
+        if bev_h is None or bev_w is None:
+            raise ValueError("bev_h and bev_w must be provided from config")
+        self.bev_h = int(bev_h) if bev_h is not None else 0
+        self.bev_w = int(bev_w) if bev_w is not None else 0
 
         self.lora_rank = int(lora_rank)
         self.lora_alpha = float(lora_alpha)
@@ -246,9 +253,22 @@ class CustomVADPolicy(ActorCriticPolicy):
             planning_steps=self.planning_steps,
             action_dim=self.action_dim,
         )
+        value_bev_channels = self.embed_dims // 2
+        self.value_bev_encoder = nn.Sequential(
+            nn.Conv2d(self.embed_dims, value_bev_channels, kernel_size=3, stride=2, padding=1),
+            nn.GroupNorm(8, value_bev_channels),
+            nn.ReLU(),
+            nn.Conv2d(value_bev_channels, value_bev_channels, kernel_size=3, stride=2, padding=1),
+            nn.GroupNorm(8, value_bev_channels),
+            nn.ReLU(),
+            nn.Conv2d(value_bev_channels, self.embed_dims, kernel_size=1),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d(1),
+        )
+        critic_input_dim = int(self.mlp_extractor.latent_dim_pi) + self.embed_dims
         self.value_adapter = nn.Sequential(
-            nn.LayerNorm(self.embed_dims),
-            nn.Linear(self.embed_dims, self.embed_dims * 2),
+            nn.LayerNorm(critic_input_dim),
+            nn.Linear(critic_input_dim, self.embed_dims * 2),
             nn.ReLU(),
             nn.Linear(self.embed_dims * 2, self.embed_dims),
         )
@@ -335,21 +355,7 @@ class CustomVADPolicy(ActorCriticPolicy):
             self.planning_weights["ego_fut_decoder_state_dict"], strict=True
         )
 
-        planning_embed_dims = int(self.planning_weights.get("embed_dims", self.embed_dims))
-        if planning_embed_dims != self.embed_dims:
-            raise ValueError(
-                f"embed_dims mismatch: config={self.embed_dims}, planning={planning_embed_dims}"
-            )
-        planning_fut_mode = int(self.planning_weights.get("ego_fut_mode", self.ego_fut_mode))
-        if planning_fut_mode != self.ego_fut_mode:
-            raise ValueError(
-                f"ego_fut_mode mismatch: config={self.ego_fut_mode}, planning={planning_fut_mode}"
-            )
-        planning_ts = int(self.planning_weights.get("fut_ts", self.planning_steps))
-        if planning_ts != self.planning_steps:
-            raise ValueError(
-                f"planning_steps mismatch: config={self.planning_steps}, planning={planning_ts}"
-            )
+        return
 
     def _create_std_expansion_matrix(self) -> torch.Tensor:
         matrix = torch.zeros(2, self.action_dim, dtype=torch.float32)
@@ -399,7 +405,8 @@ class CustomVADPolicy(ActorCriticPolicy):
     ) -> Dict[str, torch.Tensor]:
         required = [
             "ego_query",
-            "ego_pos_emb",
+            "ego_agent_pos_emb",
+            "ego_map_pos_emb",
             "agent_query",
             "agent_pos_emb",
             "agent_mask",
@@ -407,6 +414,7 @@ class CustomVADPolicy(ActorCriticPolicy):
             "map_pos_emb",
             "map_mask",
             "ego_fut_cmd",
+            "bev_embed",
         ]
         missing = [name for name in required if name not in features]
         if missing:
@@ -418,13 +426,22 @@ class CustomVADPolicy(ActorCriticPolicy):
                 raise ValueError(f"Observation `{name}` must be a torch.Tensor")
 
         ego_query = tensors["ego_query"]
-        ego_pos_emb = tensors["ego_pos_emb"]
-        if ego_query.ndim != 3 or ego_pos_emb.ndim != 3:
-            raise ValueError("ego_query and ego_pos_emb must be [B, 1, D]")
-        if ego_query.shape[1] != 1 or ego_pos_emb.shape[1] != 1:
-            raise ValueError("ego_query and ego_pos_emb second dim must be 1")
-        if ego_query.shape[-1] != self.embed_dims or ego_pos_emb.shape[-1] != self.embed_dims:
-            raise ValueError("ego_query/ego_pos_emb embed dim mismatch")
+        ego_agent_pos_emb = tensors["ego_agent_pos_emb"]
+        ego_map_pos_emb = tensors["ego_map_pos_emb"]
+        if ego_query.ndim != 3 or ego_agent_pos_emb.ndim != 3:
+            raise ValueError("ego_query and ego_agent_pos_emb must be [B, 1, D]")
+        if ego_query.shape[1] != 1 or ego_agent_pos_emb.shape[1] != 1:
+            raise ValueError("ego_query and ego_agent_pos_emb second dim must be 1")
+        if ego_query.shape[-1] != self.embed_dims or ego_agent_pos_emb.shape[-1] != self.embed_dims:
+            raise ValueError("ego_query/ego_agent_pos_emb embed dim mismatch")
+        if ego_agent_pos_emb.shape[0] != ego_query.shape[0]:
+            raise ValueError("ego_agent_pos_emb batch dim mismatch")
+        if ego_map_pos_emb.ndim != 3 or ego_map_pos_emb.shape[1] != 1:
+            raise ValueError("ego_map_pos_emb must be [B, 1, D]")
+        if ego_map_pos_emb.shape[-1] != self.embed_dims:
+            raise ValueError("ego_map_pos_emb embed dim mismatch")
+        if ego_map_pos_emb.shape[0] != ego_query.shape[0]:
+            raise ValueError("ego_map_pos_emb batch dim mismatch")
 
         agent_query = tensors["agent_query"]
         agent_pos_emb = tensors["agent_pos_emb"]
@@ -432,6 +449,7 @@ class CustomVADPolicy(ActorCriticPolicy):
         map_pos_emb = tensors["map_pos_emb"]
         agent_mask = self._to_bool_mask(tensors["agent_mask"])
         map_mask = self._to_bool_mask(tensors["map_mask"])
+        bev_embed = tensors["bev_embed"]
         if (
             agent_query.ndim != 3
             or agent_pos_emb.ndim != 3
@@ -439,6 +457,8 @@ class CustomVADPolicy(ActorCriticPolicy):
             or map_pos_emb.ndim != 3
         ):
             raise ValueError("agent/map query and pos tensors must be [B, N, D]")
+        if bev_embed.ndim != 3:
+            raise ValueError(f"bev_embed must be [B, HW, D], got {bev_embed.shape}")
         if agent_mask.ndim != 2 or map_mask.ndim != 2:
             raise ValueError("agent_mask/map_mask must be [B, N]")
         if agent_query.shape != agent_pos_emb.shape or map_query.shape != map_pos_emb.shape:
@@ -447,26 +467,34 @@ class CustomVADPolicy(ActorCriticPolicy):
             raise ValueError("query and mask token dimensions mismatch")
         if agent_query.shape[-1] != self.embed_dims or map_query.shape[-1] != self.embed_dims:
             raise ValueError("agent/map embed dim mismatch")
+        if bev_embed.shape[-1] != self.embed_dims:
+            raise ValueError(
+                f"bev_embed dim mismatch: expected {self.embed_dims}, got {bev_embed.shape[-1]}"
+            )
 
         batch_size = ego_query.shape[0]
         for name in ("agent_query", "agent_pos_emb", "agent_mask", "map_query", "map_pos_emb", "map_mask"):
             if tensors[name].shape[0] != batch_size:
                 raise ValueError(f"Batch dimension mismatch on `{name}`")
+        if bev_embed.shape[0] != batch_size:
+            raise ValueError("Batch dimension mismatch on `bev_embed`")
         ego_fut_cmd = self._validate_command(tensors["ego_fut_cmd"], batch_size)
 
         return {
             "ego_query": ego_query,
-            "ego_pos_emb": ego_pos_emb,
+            "ego_agent_pos_emb": ego_agent_pos_emb,
+            "ego_map_pos_emb": ego_map_pos_emb,
             "agent_query": agent_query,
             "agent_pos_emb": agent_pos_emb,
             "agent_mask": agent_mask,
             "map_query": map_query,
             "map_pos_emb": map_pos_emb,
             "map_mask": map_mask,
+            "bev_embed": bev_embed,
             "ego_fut_cmd": ego_fut_cmd,
         }
 
-    def _decode_action_mean_and_value(
+    def latent_net(
         self, features: Dict[str, torch.Tensor]
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         obs = self._extract_observation_tensors(features)
@@ -475,7 +503,7 @@ class CustomVADPolicy(ActorCriticPolicy):
             query=obs["ego_query"].permute(1, 0, 2),
             key=obs["agent_query"].permute(1, 0, 2),
             value=obs["agent_query"].permute(1, 0, 2),
-            query_pos=obs["ego_pos_emb"].permute(1, 0, 2),
+            query_pos=obs["ego_agent_pos_emb"].permute(1, 0, 2),
             key_pos=obs["agent_pos_emb"].permute(1, 0, 2),
             key_padding_mask=obs["agent_mask"],
         )
@@ -483,19 +511,19 @@ class CustomVADPolicy(ActorCriticPolicy):
             query=ego_agent_query,
             key=obs["map_query"].permute(1, 0, 2),
             value=obs["map_query"].permute(1, 0, 2),
-            query_pos=obs["ego_pos_emb"].permute(1, 0, 2),
+            query_pos=obs["ego_map_pos_emb"].permute(1, 0, 2),
             key_pos=obs["map_pos_emb"].permute(1, 0, 2),
             key_padding_mask=obs["map_mask"],
         )
 
-        ego_feats = torch.cat(
+        latent_action = torch.cat(
             [ego_agent_query.permute(1, 0, 2), ego_map_query.permute(1, 0, 2)], dim=-1
         )  # latent action
 
-        ego_map_out = ego_map_query.permute(1, 0, 2)
-        value_in = ego_map_out.squeeze(1).detach()
-        latent_value = self.value_adapter(value_in)
-        return ego_feats, latent_value, obs["ego_fut_cmd"]
+        bev_context = self._encode_bev_for_value(obs["bev_embed"].detach())
+        critic_input = torch.cat([latent_action.squeeze(1).detach(), bev_context], dim=-1)
+        latent_value = self.value_adapter(critic_input)
+        return latent_action, latent_value, obs["ego_fut_cmd"]
 
     def extract_features(self, obs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         return self.features_extractor(obs)
@@ -507,6 +535,16 @@ class CustomVADPolicy(ActorCriticPolicy):
         norm_mean = (physical_mean - bias) / (scale + eps)
         norm_mean = torch.clamp(norm_mean, -1.0 + eps, 1.0 - eps)
         return torch.atanh(norm_mean)
+
+
+    def _encode_bev_for_value(self, bev_embed: torch.Tensor) -> torch.Tensor:
+        if bev_embed.ndim != 3:
+            raise ValueError(f"bev_embed must be [B, HW, C], got {bev_embed.shape}")
+
+        batch, token_count, dim = bev_embed.shape
+        bev_feat = bev_embed.permute(0, 2, 1).contiguous().view(batch, dim, self.bev_h, self.bev_w)
+        bev_context = self.value_bev_encoder(bev_feat)
+        return bev_context.view(bev_context.shape[0], -1)
 
     def _get_action_dist_from_latent(
         self,
@@ -532,7 +570,7 @@ class CustomVADPolicy(ActorCriticPolicy):
 
     def forward(self, obs: Dict[str, torch.Tensor], deterministic: bool = False):
         features = self.extract_features(obs)
-        latent_action, latent_value, ego_fut_cmd = self._decode_action_mean_and_value(features)
+        latent_action, latent_value, ego_fut_cmd = self.latent_net(features)
         action_mean, action_dist_latent = self.action_net(latent_action, ego_fut_cmd)
         values = self.value_net(latent_value)
         distribution = self._get_action_dist_from_latent(action_mean, action_dist_latent)
@@ -542,13 +580,13 @@ class CustomVADPolicy(ActorCriticPolicy):
 
     def get_distribution(self, obs: Dict[str, torch.Tensor]):
         features = self.extract_features(obs)
-        latent_action, _, ego_fut_cmd = self._decode_action_mean_and_value(features)
+        latent_action, _, ego_fut_cmd = self.latent_net(features)
         action_mean, action_dist_latent = self.action_net(latent_action, ego_fut_cmd)
         return self._get_action_dist_from_latent(action_mean, action_dist_latent)
 
     def predict_values(self, obs: torch.Tensor) -> torch.Tensor:
         features = self.extract_features(obs)
-        _, latent_value, _ = self._decode_action_mean_and_value(features)
+        _, latent_value, _ = self.latent_net(features)
         values = self.value_net(latent_value)
         return values
 
@@ -560,7 +598,7 @@ class CustomVADPolicy(ActorCriticPolicy):
         self, obs: torch.Tensor, actions: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         features = self.extract_features(obs)
-        latent_action, latent_value, ego_fut_cmd = self._decode_action_mean_and_value(features)
+        latent_action, latent_value, ego_fut_cmd = self.latent_net(features)
         action_mean, action_dist_latent = self.action_net(latent_action, ego_fut_cmd)
         values = self.value_net(latent_value)
         distribution = self._get_action_dist_from_latent(action_mean, action_dist_latent)
@@ -585,7 +623,7 @@ class CustomVADPolicy(ActorCriticPolicy):
 
         if action_mean is None:
             features = self.extract_features(obs)
-            latent_action, _, ego_fut_cmd = self._decode_action_mean_and_value(features)
+            latent_action, _, ego_fut_cmd = self.latent_net(features)
             action_mean, _ = self.action_net(latent_action, ego_fut_cmd)
 
         with torch.no_grad():
@@ -726,6 +764,7 @@ class CustomVADPolicy(ActorCriticPolicy):
         self._set_module_trainability(self.ego_fut_decoder, self.train_action)
         self._set_module_trainability(self.action_net, self.train_action)
         self._set_module_trainability(self.lora_modules, self.train_lora)
+        self._set_module_trainability(self.value_bev_encoder, True)
         self._set_module_trainability(self.value_adapter, True)
         self._set_module_trainability(self.value_net, True)
         self.log_std.requires_grad = self.train_log_std
@@ -839,7 +878,7 @@ class CustomVADPolicy(ActorCriticPolicy):
         self._maybe_add_params_to_actor_optimizer(group_name, params, tag=tag)
 
     def _collect_critic_parameters(self, trainable_only: bool = True) -> List[nn.Parameter]:
-        modules = [self.value_adapter, self.value_net]
+        modules = [self.value_bev_encoder, self.value_adapter, self.value_net]
         params: List[nn.Parameter] = []
         for module in modules:
             for param in module.parameters():

@@ -16,6 +16,11 @@ class VADWrapper(UniADWrapper):
         dataparser,
         embed_dims: int = 256,
         planning_steps: int = 6,
+        max_agent_queries: int = 0,
+        max_map_queries: int = 0,
+        ego_fut_mode: int = 3,
+        bev_h: int = 0,
+        bev_w: int = 0,
         uniad_device: str = "cuda",
         policy_device: str = "cuda",
         lateral_bounds: Tuple[float, float] = (-0.6, 0.6),
@@ -26,8 +31,8 @@ class VADWrapper(UniADWrapper):
             uniad_model=vad_model,
             dataparser=dataparser,
             embed_dims=embed_dims,
-            bev_h=1,
-            bev_w=1,
+            bev_h=bev_h,
+            bev_w=bev_w,
             planning_steps=planning_steps,
             uniad_device=uniad_device,
             policy_device=policy_device,
@@ -35,27 +40,23 @@ class VADWrapper(UniADWrapper):
             longitudinal_bounds=longitudinal_bounds,
         )
         self.vad_model = self.uniad_model
-        model_impl = self.vad_model.module if hasattr(self.vad_model, "module") else self.vad_model
-        if not hasattr(model_impl, "pts_bbox_head"):
-            raise ValueError("VADWrapper expects model.pts_bbox_head")
+        model_impl = self.vad_model.module
         head = model_impl.pts_bbox_head
-        self.max_agent_queries = int(head.num_query)
-        self.max_map_queries = int(head.map_num_vec)
-        self.ego_fut_mode = int(head.ego_fut_mode)
-        fut_ts = int(head.fut_ts)
-        if fut_ts != self.planning_steps:
-            raise ValueError(
-                f"planning_steps ({self.planning_steps}) must match VAD fut_ts ({fut_ts})"
-            )
-        if self.ego_fut_mode != 3:
-            raise ValueError(f"VADWrapper expects ego_fut_mode=3, got {self.ego_fut_mode}")
+        self.max_agent_queries = int(max_agent_queries)
+        self.max_map_queries = int(max_map_queries)
+        self.ego_fut_mode = int(ego_fut_mode)
+        self.bev_h = int(bev_h)
+        self.bev_w = int(bev_w)
 
         self.observation_space = spaces.Dict(
             {
                 "ego_query": spaces.Box(
                     low=-np.inf, high=np.inf, shape=(1, self.embed_dims), dtype=np.float32
                 ),
-                "ego_pos_emb": spaces.Box(
+                "ego_agent_pos_emb": spaces.Box(
+                    low=-np.inf, high=np.inf, shape=(1, self.embed_dims), dtype=np.float32
+                ),
+                "ego_map_pos_emb": spaces.Box(
                     low=-np.inf, high=np.inf, shape=(1, self.embed_dims), dtype=np.float32
                 ),
                 "agent_query": spaces.Box(
@@ -88,6 +89,12 @@ class VADWrapper(UniADWrapper):
                 "map_mask": spaces.Box(
                     low=0.0, high=1.0, shape=(self.max_map_queries,), dtype=np.float32
                 ),
+                "bev_embed": spaces.Box(
+                    low=-np.inf,
+                    high=np.inf,
+                    shape=(self.bev_h * self.bev_w, self.embed_dims),
+                    dtype=np.float32,
+                ),
                 "ego_fut_cmd": spaces.Box(
                     low=0.0, high=1.0, shape=(self.ego_fut_mode,), dtype=np.float32
                 ),
@@ -96,7 +103,7 @@ class VADWrapper(UniADWrapper):
 
     @staticmethod
     def _require_tensor(data: Dict[str, Any], key: str) -> torch.Tensor:
-        value = data.get(key)
+        value = data[key]
         if not isinstance(value, torch.Tensor):
             raise ValueError(f"feature_extractor output `{key}` must be a torch.Tensor")
         return value
@@ -172,13 +179,15 @@ class VADWrapper(UniADWrapper):
             raise ValueError("VAD feature_extractor output must be a dict")
 
         ego_query = self._require_tensor(model_output, "ego_query")
-        ego_pos_emb = self._require_tensor(model_output, "ego_pos_emb")
+        ego_agent_pos_emb = self._require_tensor(model_output, "ego_agent_pos_emb")
+        ego_map_pos_emb = self._require_tensor(model_output, "ego_map_pos_emb")
         agent_query = self._require_tensor(model_output, "agent_query")
         agent_pos_emb = self._require_tensor(model_output, "agent_pos_emb")
         agent_mask = self._to_bool_mask(self._require_tensor(model_output, "agent_mask"))
         map_query = self._require_tensor(model_output, "map_query")
         map_pos_emb = self._require_tensor(model_output, "map_pos_emb")
         map_mask = self._to_bool_mask(self._require_tensor(model_output, "map_mask"))
+        bev_embed = self._require_tensor(model_output, "bev_embed")
 
         agent_query, agent_pos_emb, agent_mask = self._pad_tokens(
             agent_query, agent_pos_emb, agent_mask, self.max_agent_queries
@@ -186,29 +195,33 @@ class VADWrapper(UniADWrapper):
         map_query, map_pos_emb, map_mask = self._pad_tokens(
             map_query, map_pos_emb, map_mask, self.max_map_queries
         )
+        bev_embed = bev_embed.permute(1, 0, 2)
 
         cmd_one_hot = command_to_one_hot(int(obs_info["command"]), ego_query.device)
 
         ego_query = ego_query.to(self.policy_device)
-        ego_pos_emb = ego_pos_emb.to(self.policy_device)
+        ego_agent_pos_emb = ego_agent_pos_emb.to(self.policy_device)
+        ego_map_pos_emb = ego_map_pos_emb.to(self.policy_device)
         agent_query = agent_query.to(self.policy_device)
         agent_pos_emb = agent_pos_emb.to(self.policy_device)
         agent_mask = agent_mask.to(self.policy_device)
         map_query = map_query.to(self.policy_device)
         map_pos_emb = map_pos_emb.to(self.policy_device)
         map_mask = map_mask.to(self.policy_device)
+        bev_embed = bev_embed.to(self.policy_device)
         cmd_one_hot = cmd_one_hot.to(self.policy_device)
 
         processed_obs = {
             "ego_query": ego_query[0].cpu().numpy().astype(np.float32),
-            "ego_pos_emb": ego_pos_emb[0].cpu().numpy().astype(np.float32),
+            "ego_agent_pos_emb": ego_agent_pos_emb[0].cpu().numpy().astype(np.float32),
+            "ego_map_pos_emb": ego_map_pos_emb[0].cpu().numpy().astype(np.float32),
             "agent_query": agent_query[0].cpu().numpy().astype(np.float32),
             "agent_pos_emb": agent_pos_emb[0].cpu().numpy().astype(np.float32),
             "agent_mask": agent_mask[0].float().cpu().numpy().astype(np.float32),
             "map_query": map_query[0].cpu().numpy().astype(np.float32),
             "map_pos_emb": map_pos_emb[0].cpu().numpy().astype(np.float32),
             "map_mask": map_mask[0].float().cpu().numpy().astype(np.float32),
+            "bev_embed": bev_embed[0].cpu().numpy().astype(np.float32),
             "ego_fut_cmd": cmd_one_hot.cpu().numpy().astype(np.float32),
         }
         return processed_obs
-

@@ -105,7 +105,7 @@ phase_presets:
     critic_lr: 0.0001
     log_std_bounds: [-4.0, -1.5]
     kl_reg_coef: 0.0
-    bc_reg_coef: 15.0
+    bc_reg_coef: 0.0
     phase_behavior:
       train_action: true
       train_lora: true
@@ -125,7 +125,7 @@ phase_presets:
     critic_lr: 0.0001
     log_std_bounds: [-4.0, -2.0]
     kl_reg_coef: 0.0
-    bc_reg_coef: 5.0
+    bc_reg_coef: 0.0
     phase_behavior:
       train_action: true
       train_lora: true

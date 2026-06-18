@@ -109,8 +109,10 @@ def create_uniad(uniad_config: dict):
         if 'PALETTE' in checkpoint.get('meta', {}):
             model.PALETTE = checkpoint['meta']['PALETTE']
 
-        device_ids = [int(device.split(':')[1])]
-        model = MMDataParallel(model, device_ids=device_ids).eval()
+        device_id = 0
+        if ":" in device:
+            device_id = int(device.split(":")[1])
+        model = MMDataParallel(model, device_ids=[device_id]).eval()
         
         print("UniAD model loaded successfully!")
         return model

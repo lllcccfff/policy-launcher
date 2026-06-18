@@ -12,13 +12,6 @@ def _to_vec3(value: Any) -> List[float]:
     out[:n] = arr[:n]
     return out.tolist()
 
-
-def turn_signal_to_command(turn_signal: Any) -> int:
-    sign = int(np.sign(float(turn_signal)))
-    mapping = {-1: 0, 0: 2, 1: 1}  # right, straight, left
-    return mapping[sign]
-
-
 def unpack_ad_observation(
     obs: Dict[str, Any],
 ) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], List[Dict[str, Any]]]:
@@ -33,8 +26,15 @@ def unpack_ad_observation(
     obs_img = gaussian["image"]
     obs_info = dict(states)
     obs_info["cam_params"] = gaussian["camera_info"]
-    obs_info["command"] = turn_signal_to_command(navigation["turn_signal"])
-    obs_info["expert_path"] = navigation["waypoint"]
+    turn_signal = navigation["turn_signal"]
+    if turn_signal == -1:
+        command = 0
+    elif turn_signal == 1:
+        command = 1
+    else:
+        command = 2
+    obs_info["command"] = command
+    obs_info["expert_path"] = navigation.get("waypoints", None)
     obs_info["surroundings"] = surrounding
     obs_info["ego_pos"] = _to_vec3(obs_info["ego_pos"])
     obs_info["ego_rot"] = _to_vec3(obs_info["ego_rot"])
@@ -42,4 +42,3 @@ def unpack_ad_observation(
     obs_info["linear_acceleration"] = _to_vec3(obs_info["linear_acceleration"])
     obs_info["angular_velocity"] = _to_vec3(obs_info["angular_velocity"])
     return obs_img, obs_info, navigation, surrounding
-

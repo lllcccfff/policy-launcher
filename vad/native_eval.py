@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Sequence
 
@@ -20,13 +22,20 @@ def _sync_scene_token(obs_info: Dict[str, Any], step_info: Dict[str, Any]) -> No
 
 
 class EpisodeGridVideoWriter:
-    def __init__(self, output_path: Path, fps: int, preferred_order: Sequence[str]):
+    def __init__(
+        self,
+        output_path: Path,
+        step_size: float,
+        camera_layout: Sequence[Sequence[str]],
+    ):
         self.output_path = output_path
-        self.fps = fps
-        self.preferred_order = list(preferred_order)
+        self.fps = self._infer_fps(step_size)
+        self.camera_layout = [list(row) for row in camera_layout]
         self._writer: cv2.VideoWriter | None = None
+        self._ffmpeg_proc: subprocess.Popen[bytes] | None = None
         self._codec: str | None = None
         self._camera_order: List[str] = []
+        self._grid_slots: List[str | None] = []
         self._cols = 1
         self._rows = 1
         self._cell_w = 1
@@ -34,6 +43,13 @@ class EpisodeGridVideoWriter:
         self._frame_w = 2
         self._frame_h = 2
         self._label_h = 28
+
+    @staticmethod
+    def _infer_fps(step_size: float) -> int:
+        step = float(step_size)
+        if not np.isfinite(step) or step <= 0:
+            raise ValueError(f"`step_size` must be finite and > 0, got {step_size}")
+        return max(1, int(round(1.0 / step)))
 
     @staticmethod
     def _to_uint8_rgb(img: np.ndarray) -> np.ndarray:
@@ -60,11 +76,24 @@ class EpisodeGridVideoWriter:
             arr = arr[:, :, :3]
         return np.ascontiguousarray(arr)
 
-    def _resolve_camera_order(self, obs_img: Dict[str, np.ndarray]) -> List[str]:
-        keys = list(obs_img.keys())
-        ordered = [k for k in self.preferred_order if k in obs_img]
-        ordered.extend([k for k in sorted(keys) if k not in ordered])
-        return ordered
+    def _resolve_grid_slots(self, obs_img: Dict[str, np.ndarray]) -> List[str | None]:
+        self._rows = len(self.camera_layout)
+        self._cols = max((len(row) for row in self.camera_layout), default=0)
+        if self._rows <= 0 or self._cols <= 0:
+            raise ValueError("`camera_layout` must be a non-empty 2D matrix of camera names.")
+
+        slots: List[str | None] = []
+        for row in range(self._rows):
+            row_names = self.camera_layout[row]
+            for col in range(self._cols):
+                name = row_names[col] if col < len(row_names) else ""
+                if name and name in obs_img:
+                    slots.append(name)
+                else:
+                    slots.append(None)
+
+        self._camera_order = [name for name in slots if name is not None]
+        return slots
 
     @staticmethod
     def _even_size(value: int) -> int:
@@ -74,30 +103,86 @@ class EpisodeGridVideoWriter:
     def _codec_candidates(self) -> List[tuple[Path, str]]:
         suffix = self.output_path.suffix.lower()
         if suffix == ".avi":
-            return [(self.output_path, "MJPG"), (self.output_path, "XVID")]
+            return [(self.output_path, "MJPG"), (self.output_path, "XVID"), (self.output_path, "mp4v")]
         if suffix in {".mp4", ".m4v", ".mov"}:
             avi_path = self.output_path.with_suffix(".avi")
             return [
+                # Prefer AVC/H.264 before MPEG-4 Part 2 for better native player support.
                 (self.output_path, "avc1"),
                 (self.output_path, "H264"),
+                (self.output_path, "mp4v"),
                 (avi_path, "MJPG"),
                 (avi_path, "XVID"),
-                (self.output_path, "mp4v"),
             ]
         avi_path = self.output_path.with_suffix(".avi")
         return [
             (self.output_path, "avc1"),
             (self.output_path, "H264"),
+            (self.output_path, "mp4v"),
             (avi_path, "MJPG"),
             (avi_path, "XVID"),
-            (self.output_path, "mp4v"),
         ]
 
+    def _try_init_ffmpeg_writer(self) -> bool:
+        if self.output_path.suffix.lower() not in {".mp4", ".m4v", ".mov"}:
+            return False
+
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg is None:
+            return False
+
+        cmd = [
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "rawvideo",
+            "-vcodec",
+            "rawvideo",
+            "-pix_fmt",
+            "bgr24",
+            "-s:v",
+            f"{self._frame_w}x{self._frame_h}",
+            "-r",
+            str(self.fps),
+            "-i",
+            "-",
+            "-an",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            str(self.output_path),
+        ]
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError:
+            return False
+
+        if proc.stdin is None:
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+            return False
+        if proc.poll() is not None:
+            return False
+
+        self._ffmpeg_proc = proc
+        self._codec = "libx264"
+        return True
+
     def _init_writer(self, obs_img: Dict[str, np.ndarray]) -> None:
-        self._camera_order = self._resolve_camera_order(obs_img)
-        n = max(len(self._camera_order), 1)
-        self._cols = int(math.ceil(math.sqrt(n)))
-        self._rows = int(math.ceil(n / self._cols))
+        self._grid_slots = self._resolve_grid_slots(obs_img)
 
         max_h, max_w = 1, 1
         for name in self._camera_order:
@@ -111,6 +196,9 @@ class EpisodeGridVideoWriter:
         frame_h = self._cell_h * self._rows
         self._frame_w = self._even_size(frame_w)
         self._frame_h = self._even_size(frame_h)
+
+        if self._try_init_ffmpeg_writer():
+            return
 
         candidates = self._codec_candidates()
 
@@ -152,15 +240,16 @@ class EpisodeGridVideoWriter:
     def write(self, obs_img: Dict[str, np.ndarray]) -> None:
         if not obs_img:
             return
-        if self._writer is None:
+        if self._writer is None and self._ffmpeg_proc is None:
             self._init_writer(obs_img)
-        assert self._writer is not None
+        if self._writer is None and self._ffmpeg_proc is None:
+            raise RuntimeError("No available video writer backend.")
 
         grid_h = self._cell_h * self._rows
         grid_w = self._cell_w * self._cols
         grid = np.zeros((grid_h, grid_w, 3), dtype=np.uint8)
-        for idx, name in enumerate(self._camera_order):
-            if name not in obs_img:
+        for idx, name in enumerate(self._grid_slots):
+            if name is None or name not in obs_img:
                 continue
             img = self._normalize_camera_image(obs_img[name])
             labeled = self._add_label(img, name)
@@ -177,9 +266,29 @@ class EpisodeGridVideoWriter:
         else:
             frame = grid
 
-        self._writer.write(frame[..., ::-1])  # RGB -> BGR
+        frame_bgr = np.ascontiguousarray(frame[..., ::-1])  # RGB -> BGR
+        if self._ffmpeg_proc is not None:
+            stdin = self._ffmpeg_proc.stdin
+            if stdin is None:
+                raise RuntimeError("FFmpeg writer stdin is unavailable.")
+            try:
+                stdin.write(frame_bgr.tobytes())
+            except BrokenPipeError as exc:
+                raise RuntimeError("FFmpeg video writer failed: broken pipe") from exc
+            return
+
+        self._writer.write(frame_bgr)
 
     def close(self) -> None:
+        if self._ffmpeg_proc is not None:
+            proc = self._ffmpeg_proc
+            self._ffmpeg_proc = None
+            if proc.stdin is not None:
+                proc.stdin.close()
+            ret = proc.wait()
+            if ret != 0:
+                raise RuntimeError(f"FFmpeg video writer exited with code {ret}.")
+
         if self._writer is not None:
             self._writer.release()
             self._writer = None
@@ -288,7 +397,11 @@ def evaluate_vad_native(
     save_video: bool = False,
     output_dir: str | Path = "./tmp",
     save_json: bool = False,
-    video_fps: int = 10,
+    video_step_size: float = 0.1,
+    video_camera_layout: Sequence[Sequence[str]] = (
+        ("FRONT_LEFT", "FRONT", "FRONT_RIGHT"),
+        ("BACK_LEFT", "BACK", "BACK_RIGHT"),
+    ),
 ) -> Dict[str, Any]:
     output_path = Path(output_dir)
     if save_video or save_json:
@@ -307,7 +420,11 @@ def evaluate_vad_native(
         video_path = None
         if save_video:
             video_path = output_path / f"episode_{ep:03d}.mp4"
-            writer = EpisodeGridVideoWriter(video_path, fps=video_fps, preferred_order=FIXED_CAMERAS)
+            writer = EpisodeGridVideoWriter(
+                video_path,
+                step_size=video_step_size,
+                camera_layout=video_camera_layout,
+            )
 
         total_reward = 0.0
         steps = 0

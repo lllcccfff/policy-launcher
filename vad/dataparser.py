@@ -50,10 +50,14 @@ def get_vad_img_norm_cfg() -> Dict[str, object]:
     }
 
 
-def command_to_one_hot(command: int, device: torch.device) -> torch.Tensor:
+def command_to_one_hot(raw_command: int, device: torch.device) -> torch.Tensor:
     # Simulator convention: 0=right, 1=left, 2=straight.
-    if command not in (0, 1, 2):
-        raise ValueError(f"Unsupported command id: {command}")
+    if raw_command < 0:
+        command = 0
+    elif raw_command > 0:
+        command = 1
+    else:
+        command = 2
     one_hot = torch.zeros(3, dtype=torch.float32, device=device)
     one_hot[command] = 1.0
     return one_hot

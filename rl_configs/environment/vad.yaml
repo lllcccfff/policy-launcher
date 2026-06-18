@@ -2,8 +2,8 @@ base_config: base.yaml
 
 observation_space:
   # VAD uses token-level dict observations from VAD head outputs.
-  # `bev_h/bev_w` are compatibility placeholders for shared config schema.
-  bev_h: null                     # Placeholder only (none semantics; VAD wrapper does not consume BEV map)
-  bev_w: 0                        # Placeholder only (zero semantics; VAD wrapper does not consume BEV map)
+  bev_h: 200                       # BEV feature map height (must match VAD head)
+  bev_w: 200                       # BEV feature map width (must match VAD head)
+  max_agent_queries: 300          # Must match VAD head num_query
+  max_map_queries: 100            # Must match VAD head map_num_vec
   ego_fut_mode: 3                 # Number of future-command modes (one-hot ego_fut_cmd)
-

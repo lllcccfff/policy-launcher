@@ -293,6 +293,7 @@ def run_phase_training(
         print("未配置可用的 phase 训练计划，跳过训练")
         return 0
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    tb_name = f"PPO_{timestamp}"
     global_step = 0
     for phase_idx, (phase_id, phase_steps) in enumerate(plan):
         apply_phase_settings(model, config, phase_id, phase_steps)
@@ -303,13 +304,12 @@ def run_phase_training(
         if hasattr(model, "set_phase_lr_context"):
             model.set_phase_lr_context(phase_steps)
         print(f"\n--- Phase {phase_id} | steps={phase_steps:,} (global={global_step:,}/{total_steps:,}) ---")
-        tb_name = f"PPO_phase{phase_id}_{timestamp}"
         model.learn(
             total_timesteps=phase_steps,
             callback=callbacks,
             log_interval=1,
             tb_log_name=tb_name,
-            reset_num_timesteps=True,
+            reset_num_timesteps=False,
             progress_bar=True,
         )
         global_step += phase_steps

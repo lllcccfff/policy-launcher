@@ -13,8 +13,8 @@ LIDAR_OFFSET = np.array([0.5, 0.0, 1.50], dtype=np.float32)  # meters (front, le
 lidar2ego = np.array([[0, 1, 0], [-1, 0, 0], [0, 0, 1]], dtype=np.float32)
 LIDAR_TO_EGO_4X4 = np.array(
     [
-        [1, 0, 0, 0.5],
-        [0, 1, 0, 0.0],
+        [0, 1, 0, 0.5],
+        [-1, 0, 0, 0.0],
         [0, 0, 1, 1.5],
         [0, 0, 0, 1.0],
     ],

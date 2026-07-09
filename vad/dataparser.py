@@ -34,14 +34,13 @@ CAMERA_ALIASES = {
 
 LIDAR_TO_EGO_4X4 = np.array(
     [
-        [0, 1, 0, 0.5],
-        [-1, 0, 0, 0.0],
-        [0, 0, 1, 1.5],
+        [0.0020332718, 0.99970406, 0.024241721, 0.943713],
+        [-0.9999805, 0.002175657, -0.005848639, 0.0],
+        [-0.00589965, -0.024229359, 0.99968904, 1.84023],
         [0, 0, 0, 1.0],
     ],
     dtype=np.float32,
 )
-
 def get_vad_img_norm_cfg() -> Dict[str, object]:
     return {
         "mean": np.array(VAD_IMG_NORM_CFG["mean"], dtype=np.float32),

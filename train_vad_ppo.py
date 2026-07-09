@@ -452,7 +452,7 @@ def evaluate(
     model.set_parameters(params, exact_match=False, device=config.policy_device)
 
     all_eval_metrics = []
-    metric_keys = ["NC", "DAC", "TTC", "COM", "RC"]
+    metric_keys = ["NC", "DAC", "TTC", "COM", "RC", "ProgressSpeed"]
 
     for episode_idx in range(n_episodes):
         n_envs = getattr(env, "num_envs", 1)
@@ -580,11 +580,7 @@ def evaluate(
         print(f"  平均长度: {overall_mean_length:.1f} ± {overall_std_length:.1f}")
         print(
             "  平均指标: "
-            f"NC={overall_mean_metrics['NC']:.3f}, "
-            f"DAC={overall_mean_metrics['DAC']:.3f}, "
-            f"TTC={overall_mean_metrics['TTC']:.3f}, "
-            f"COM={overall_mean_metrics['COM']:.3f}, "
-            f"RC={overall_mean_metrics['RC']:.3f}"
+            + ", ".join(f"{k}={overall_mean_metrics[k]:.3f}" for k in metric_keys)
         )
         print(f"{'=' * 60}")
     env.close()

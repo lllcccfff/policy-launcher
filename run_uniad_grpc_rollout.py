@@ -7,6 +7,7 @@ import argparse
 from pathlib import Path
 import shutil
 
+import cv2
 import numpy as np
 
 from rl_framework.common.grpc_obs_adapter import unpack_ad_observation
@@ -58,6 +59,11 @@ def _terminal_reason(step_info: dict | None, terminated: bool, truncated: bool) 
     if truncated:
         return "truncated"
     return "max_rollout_steps"
+
+
+def _is_ordered_scenario_exhausted(exc: BaseException) -> bool:
+    message = str(exc)
+    return "No more scenarios to evaluate" in message or "No completed scene metrics" in message
 
 
 def _rename_with_terminal_reason(path: Path, terminal_reason: str) -> Path:
@@ -167,8 +173,6 @@ def _overlay_pred_traj_on_front_image(
     obs_info: dict,
     pred_traj: np.ndarray,
 ) -> dict:
-    from metadrive.utils.visualize import project_points_on_image
-
     if "FRONT" not in obs_img:
         return obs_img
     if "cam_params" not in obs_info or "FRONT" not in obs_info["cam_params"]:
@@ -190,21 +194,28 @@ def _overlay_pred_traj_on_front_image(
     if traj.ndim != 2 or traj.shape[1] < 2:
         raise ValueError(f"Unexpected predicted trajectory shape: {traj.shape}")
 
-    x_forward = traj[:, 1]
-    y_left = -traj[:, 0]
+    x_forward = traj[:, 0]
+    y_left = traj[:, 1]
     z_up = np.full_like(x_forward, -PRED_TRAJ_HEIGHT_BELOW_EGO_M)
     ego_points = np.stack([x_forward, y_left, z_up], axis=1)
 
     h, w = int(base_img.shape[0]), int(base_img.shape[1])
-    projected = project_points_on_image(
-        base_img,
-        k3,
-        ego2camera,
-        h,
-        w,
-        ego_points,
-        color=(255, 64, 64),
-    )
+    camera_points = (ego2camera[:3, :3] @ ego_points.T + ego2camera[:3, 3:4]).T
+    camera_points = camera_points[camera_points[:, 2] > 1e-6]
+
+    projected = np.array(base_img, copy=True)
+    if camera_points.size:
+        normalized = camera_points / camera_points[:, 2:3]
+        pixels = (k3 @ normalized.T).T
+        u = pixels[:, 0]
+        v = pixels[:, 1]
+        valid = (u >= 0) & (u < w) & (v >= 0) & (v < h)
+        points_2d = np.stack([u[valid], v[valid]], axis=1).astype(np.int32)
+        for point in points_2d:
+            cv2.circle(projected, tuple(point), radius=2, color=(255, 64, 64), thickness=-1)
+        if len(points_2d) >= 2:
+            for start, end in zip(points_2d[:-1], points_2d[1:]):
+                cv2.line(projected, tuple(start), tuple(end), color=(255, 64, 64), thickness=1)
 
     out_obs_img = dict(obs_img)
     if is_stacked:
@@ -288,9 +299,9 @@ def main() -> int:
     args = parse_args()
 
     from metadrive.envs.grpc_client_env import GrpcClientEnv
+    from rl_framework.common.video_writer import EpisodeGridVideoWriter
     from rl_framework.uniad.loader import create_uniad
     from rl_framework.uniad.native_agent import UniADNativeAgent
-    from rl_framework.vad.native_eval import EpisodeGridVideoWriter
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -312,8 +323,14 @@ def main() -> int:
 
     try:
         first_scene = None
+        scenes_completed = 0
         while True:
-            obs, reset_info = env.reset()
+            try:
+                obs, reset_info = env.reset()
+            except Exception as exc:
+                if scenes_completed > 0 and _is_ordered_scenario_exhausted(exc):
+                    break
+                raise
             scene_name = str(reset_info.get("scene_name", "scene"))
             if first_scene is None:
                 first_scene = scene_name
@@ -357,14 +374,12 @@ def main() -> int:
 
             try:
                 for _ in range(args.max_steps):
-                    raw_data = agent.prepare_raw_input(obs_img, obs_info, move_to_device=False, keep_raw_imgs=False)
+                    pred_traj, action, raw_data = agent.predict(obs_img, obs_info)
                     raw_input_traces.update(raw_data)
-                    pred_traj = agent.predict_traj_from_raw_data(raw_data)
                     vis_obs_img = _overlay_pred_traj_on_front_image(obs_img, obs_info, pred_traj)
                     writer.write(vis_obs_img)
                     frame_count += 1
 
-                    action = agent.predict_action_from_traj(pred_traj, obs_info)
                     steering_trace.append(float(action[0]))
                     th_brk_trace.append(float(action[1]))
                     obs, reward, terminated, truncated, step_info = env.step(action)
@@ -394,6 +409,7 @@ def main() -> int:
                 f"plot={plot_path} raw_input_plots={raw_input_plot_dir}({raw_input_plot_count}) "
                 f"codec={writer.codec} frames={frame_count}"
             )
+            scenes_completed += 1
 
     finally:
         env.close()

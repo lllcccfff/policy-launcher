@@ -13,7 +13,8 @@ from scipy.spatial.transform import Rotation as SCR
 from typing import Any, Dict, Tuple, Optional, Callable
 import numbers
 from rl_framework.common.grpc_obs_adapter import unpack_ad_observation
-from rl_framework.common.trajectory import traj2control
+from rl_framework.common.trajectory import lidar_to_ego_front_left, traj2control
+from rl_framework.uniad.dataparser import LIDAR_TO_EGO_4X4
 import colorsys
 import matplotlib.pyplot as plt
 
@@ -226,7 +227,8 @@ class UniADWrapper(gym.Wrapper):
             "ego_steer": float(self._prev_obs_info["ego_steer"]),
         }
     
-        acc, steer = traj2control(trajectory[0].cpu().numpy(), plan_info)
+        plan_traj = lidar_to_ego_front_left(trajectory[0].cpu().numpy(), LIDAR_TO_EGO_4X4)
+        acc, steer = traj2control(plan_traj, plan_info)
         control_action = (steer, acc) # control action != acc and steer in info
 
         obs, reward, terminated, truncated, info = self.env.step(control_action)
@@ -465,4 +467,3 @@ class UniADWrapper(gym.Wrapper):
     def _rgbf_to_bgr(self, rgb: Tuple[float, float, float]) -> Tuple[int, int, int]:
         r, g, b = rgb
         return (int(b * 255), int(g * 255), int(r * 255))
-

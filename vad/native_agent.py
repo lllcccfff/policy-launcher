@@ -5,8 +5,8 @@ from typing import Any, Dict, Sequence, Tuple
 import numpy as np
 import torch
 
-from rl_framework.common.trajectory import traj2control
-from rl_framework.vad.dataparser import get_vad_img_norm_cfg, parse_vad_obs
+from rl_framework.common.trajectory import lidar_to_ego_front_left, traj2control
+from rl_framework.vad.dataparser import LIDAR_TO_EGO_4X4, get_vad_img_norm_cfg, parse_vad_obs
 
 FIXED_CAMERAS = ("FRONT", "FRONT_LEFT", "FRONT_RIGHT", "BACK", "BACK_LEFT", "BACK_RIGHT")
 
@@ -50,7 +50,7 @@ def _decode_traj_from_pts_bbox(pts_bbox: Dict[str, Any]) -> np.ndarray:
         increments = preds
 
     traj = np.cumsum(increments, axis=0).astype(np.float32)
-    return traj
+    return lidar_to_ego_front_left(traj, LIDAR_TO_EGO_4X4)
 
 
 class VADNativeAgent:
@@ -91,6 +91,7 @@ class VADNativeAgent:
         obs_info["command"] = int(obs_info["command"])
         obs_info["linear_velocity"] = _to_vec3(obs_info["linear_velocity"])
         obs_info["linear_acceleration"] = _to_vec3(obs_info["linear_acceleration"])
+        obs_info["accelerate"] = _to_vec3(obs_info["accelerate"])
         obs_info["angular_velocity"] = _to_vec3(obs_info["angular_velocity"])
         obs_info["ego_velo"] = float(obs_info["ego_velo"])
         obs_info["ego_steer"] = float(obs_info["ego_steer"])

@@ -14,11 +14,14 @@ from rl_framework.common.metrics import EpisodeMetricTracker
 from rl_framework.common.grpc_obs_adapter import unpack_ad_observation
 from rl_framework.vad.native_agent import FIXED_CAMERAS, VADNativeAgent
 
-METRIC_KEYS = ("NC", "DAC", "TTC", "COM", "RC")
+METRIC_KEYS = ("NC", "DAC", "TTC", "COM", "RC", "ProgressSpeed")
 
 
-def _sync_scene_token(obs_info: Dict[str, Any], step_info: Dict[str, Any]) -> None:
+def _sync_runtime_fields(obs_info: Dict[str, Any], step_info: Dict[str, Any]) -> None:
     obs_info["scene_token"] = str(step_info["scene_name"])
+    obs_info["relative_timestamp"] = float(step_info["relative_timestamp"]) * 1e-6
+    obs_info["timestamp"] = float(step_info["relative_timestamp"]) * 1e-6
+    obs_info["current_timestamp"] = float(step_info["current_timestamp"]) * 1e-6
 
 
 class EpisodeGridVideoWriter:
@@ -353,7 +356,7 @@ def _extract_surroundings(obs_info: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def _extract_expert_path(obs_info: Dict[str, Any]) -> Dict[str, Any]:
-    pts = np.asarray(obs_info["expert_path"], dtype=np.float32)[:, :2]
+    pts = np.asarray(obs_info["route_waypoints"], dtype=np.float32)[:, :2]
     seg_lengths = np.linalg.norm(pts[1:] - pts[:-1], axis=1)
     cumlen = np.concatenate(([0.0], np.cumsum(seg_lengths))).astype(np.float32)
     return {
@@ -411,7 +414,7 @@ def evaluate_vad_native(
     for ep in range(1, episodes + 1):
         obs, reset_info = env.reset()
         obs_img, obs_info, _, _ = unpack_ad_observation(obs)
-        _sync_scene_token(obs_info, reset_info)
+        _sync_runtime_fields(obs_info, reset_info)
 
         tracker = EpisodeMetricTracker()
         tracker.update(build_metric_payload(obs_info, reset_info))
@@ -439,7 +442,7 @@ def evaluate_vad_native(
                 action = agent.predict_action(obs_img, obs_info)
                 obs, reward, terminated, truncated, step_info = env.step(action)
                 obs_img, obs_info, _, _ = unpack_ad_observation(obs)
-                _sync_scene_token(obs_info, step_info)
+                _sync_runtime_fields(obs_info, step_info)
 
                 tracker.update(build_metric_payload(obs_info, step_info))
                 total_reward += float(reward)

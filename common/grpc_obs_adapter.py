@@ -4,13 +4,13 @@ from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
-
 def _to_vec3(value: Any) -> List[float]:
     arr = np.asarray(value, dtype=np.float32).reshape(-1)
     out = np.zeros(3, dtype=np.float32)
     n = min(3, arr.shape[0])
     out[:n] = arr[:n]
     return out.tolist()
+
 
 def unpack_ad_observation(
     obs: Dict[str, Any],
@@ -34,11 +34,14 @@ def unpack_ad_observation(
     else:
         command = 2
     obs_info["command"] = command
-    obs_info["expert_path"] = navigation.get("waypoints", None)
+    obs_info["route_type"] = navigation["navigating_type"]
+    obs_info["route_waypoints"] = navigation["waypoint"]
     obs_info["surroundings"] = surrounding
     obs_info["ego_pos"] = _to_vec3(obs_info["ego_pos"])
     obs_info["ego_rot"] = _to_vec3(obs_info["ego_rot"])
     obs_info["linear_velocity"] = _to_vec3(obs_info["linear_velocity"])
     obs_info["linear_acceleration"] = _to_vec3(obs_info["linear_acceleration"])
+    obs_info["accelerate"] = _to_vec3(obs_info["accelerate"])
     obs_info["angular_velocity"] = _to_vec3(obs_info["angular_velocity"])
+    obs_info["angular_acceleration"] = _to_vec3(obs_info["angular_acceleration"])
     return obs_img, obs_info, navigation, surrounding

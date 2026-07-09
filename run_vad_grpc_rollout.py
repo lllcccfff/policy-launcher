@@ -33,6 +33,11 @@ def _terminal_reason(step_info: dict | None, terminated: bool, truncated: bool) 
     return "max_rollout_steps"
 
 
+def _is_ordered_scenario_exhausted(exc: BaseException) -> bool:
+    message = str(exc)
+    return "No more scenarios to evaluate" in message or "No completed scene metrics" in message
+
+
 def _rename_with_terminal_reason(path: Path, terminal_reason: str) -> Path:
     final_path = path.with_name(f"{path.stem}__{terminal_reason}{path.suffix}")
     if final_path == path:
@@ -82,9 +87,9 @@ def main() -> int:
     args = parse_args()
 
     from metadrive.envs.grpc_client_env import GrpcClientEnv
+    from rl_framework.common.video_writer import EpisodeGridVideoWriter
     from rl_framework.vad.loader import create_vad
     from rl_framework.vad.native_agent import VADNativeAgent
-    from rl_framework.vad.native_eval import EpisodeGridVideoWriter
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -107,8 +112,14 @@ def main() -> int:
 
     try:
         first_scene = None
+        scenes_completed = 0
         while True:
-            obs, reset_info = env.reset()
+            try:
+                obs, reset_info = env.reset()
+            except Exception as exc:
+                if scenes_completed > 0 and _is_ordered_scenario_exhausted(exc):
+                    break
+                raise
             scene_name = str(reset_info.get("scene_name", "scene"))
             if first_scene is None:
                 first_scene = scene_name
@@ -178,6 +189,7 @@ def main() -> int:
                 f"plot={plot_path} "
                 f"codec={writer.codec} frames={frame_count}"
             )
+            scenes_completed += 1
 
     finally:
         env.close()

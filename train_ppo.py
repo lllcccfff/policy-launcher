@@ -466,7 +466,7 @@ def evaluate(model_path: str, base_env_fn: Callable[[], Any], config: TrainingCo
         per_env_rewards = [0.0 for _ in range(n_envs)]
         per_env_lengths = [0 for _ in range(n_envs)]
         completed = 0
-        metric_keys = ['NC', 'DAC', 'TTC', 'COM', 'RC']
+        metric_keys = ['NC', 'DAC', 'TTC', 'COM', 'RC', 'ProgressSpeed']
         sum_steps = 0
 
         done = False
@@ -526,7 +526,7 @@ def evaluate(model_path: str, base_env_fn: Callable[[], Any], config: TrainingCo
             'std_reward': std_reward,
             'mean_length': mean_length,
             'std_length': std_length,
-            'mean_metrics': mean_metrics.copy()  # 包含 NC, DAC, TTC, COM, RC
+            'mean_metrics': mean_metrics.copy()  # 包含 NC, DAC, TTC, COM, RC, ProgressSpeed
         }
         all_eval_metrics.append(eval_result)
 
@@ -550,7 +550,7 @@ def evaluate(model_path: str, base_env_fn: Callable[[], Any], config: TrainingCo
         overall_mean_length = np.mean([r['mean_length'] for r in all_eval_metrics])
         overall_std_length = np.std([r['mean_length'] for r in all_eval_metrics]) if len(all_eval_metrics) > 1 else 0.0
 
-        metric_keys = ['NC', 'DAC', 'TTC', 'COM', 'RC']
+        metric_keys = ['NC', 'DAC', 'TTC', 'COM', 'RC', 'ProgressSpeed']
         overall_mean_metrics = {}
         for key in metric_keys:
             metric_values = [r['mean_metrics'][key] for r in all_eval_metrics]
@@ -560,5 +560,5 @@ def evaluate(model_path: str, base_env_fn: Callable[[], Any], config: TrainingCo
         print(f"{n_episodes}轮评估总体平均结果 (基于 {len(all_eval_metrics)} 次有效评估):")
         print(f"  平均奖励: {overall_mean_reward:.2f} ± {overall_std_reward:.2f}")
         print(f"  平均长度: {overall_mean_length:.1f} ± {overall_std_length:.1f}")
-        print(f"  平均指标: NC={overall_mean_metrics['NC']:.3f}, DAC={overall_mean_metrics['DAC']:.3f}, TTC={overall_mean_metrics['TTC']:.3f}, COM={overall_mean_metrics['COM']:.3f}, RC={overall_mean_metrics['RC']:.3f}")
+        print("  平均指标: " + ", ".join(f"{k}={overall_mean_metrics[k]:.3f}" for k in metric_keys))
         print(f"{'='*60}")

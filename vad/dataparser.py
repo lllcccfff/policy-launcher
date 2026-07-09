@@ -34,8 +34,8 @@ CAMERA_ALIASES = {
 
 LIDAR_TO_EGO_4X4 = np.array(
     [
-        [1, 0, 0, 0.5],
-        [0, 1, 0, 0.0],
+        [0, 1, 0, 0.5],
+        [-1, 0, 0, 0.0],
         [0, 0, 1, 1.5],
         [0, 0, 0, 1.0],
     ],
@@ -50,14 +50,9 @@ def get_vad_img_norm_cfg() -> Dict[str, object]:
     }
 
 
-def command_to_one_hot(raw_command: int, device: torch.device) -> torch.Tensor:
+def command_to_one_hot(command: int, device: torch.device) -> torch.Tensor:
     # Simulator convention: 0=right, 1=left, 2=straight.
-    if raw_command < 0:
-        command = 0
-    elif raw_command > 0:
-        command = 1
-    else:
-        command = 2
+
     one_hot = torch.zeros(3, dtype=torch.float32, device=device)
     one_hot[command] = 1.0
     return one_hot
@@ -102,14 +97,14 @@ def _build_can_bus(info) -> np.ndarray:
     v_quat = SCR.from_euler("XYZ", ego_rot).as_quat()[[3, 0, 1, 2]]
     can_bus[3:7] = v_quat
 
-    linear_vel = np.asarray(info["linear_velocity"], dtype=np.float32)
-    can_bus[7:10] = r_world_ego.T @ linear_vel
-
-    linear_acc = np.asarray(info["linear_acceleration"], dtype=np.float32)
-    can_bus[10:13] = r_world_ego.T @ linear_acc
+    linear_acc = np.asarray(info["accelerate"], dtype=np.float32)
+    can_bus[7:10] = r_world_ego.T @ linear_acc
 
     angular_vel = np.asarray(info["angular_velocity"], dtype=np.float32)
-    can_bus[13:16] = angular_vel
+    can_bus[10:13] = angular_vel
+
+    linear_vel = np.asarray(info["linear_velocity"], dtype=np.float32)
+    can_bus[13:16] = r_world_ego.T @ linear_vel
 
     yaw = float(ego_rot[2])
     if yaw < 0:

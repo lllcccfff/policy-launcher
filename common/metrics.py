@@ -8,7 +8,7 @@ import numpy as np
 
 @dataclass
 class EpisodeMetricTracker:
-    """Tracks NC/DAC/TTC/COM/RC metrics within a single episode."""
+    """Tracks NC/DAC/TTC/COM/RC/ProgressSpeed metrics within a single episode."""
 
     dac_threshold: float = 1.5
     ttc_threshold: float = 5.0
@@ -29,6 +29,10 @@ class EpisodeMetricTracker:
     expert_path_points: Optional[np.ndarray] = None
     expert_path_cumlen: Optional[np.ndarray] = None
     expert_total_length: Optional[float] = None
+    progress_start: Optional[float] = None
+    progress_end: Optional[float] = None
+    progress_start_time: Optional[float] = None
+    progress_end_time: Optional[float] = None
 
     _prev_ang_vel: Optional[float] = None
     _prev_timestamp: Optional[float] = None
@@ -54,6 +58,7 @@ class EpisodeMetricTracker:
         ttc_score = float(np.mean(self.ttc_flags)) if self.ttc_flags else 1.0
         com_score = self.com_hits / self.com_total if self.com_total > 0 else 0.0
         rc_score = self._compute_route_completion()
+        progress_speed = self._compute_progress_speed()
 
         return {
             'NC': 0.0 if self.collision else 1.0,
@@ -61,6 +66,7 @@ class EpisodeMetricTracker:
             'TTC': ttc_score,
             'COM': com_score,
             'RC': rc_score,
+            'ProgressSpeed': progress_speed,
         }
 
     def _update_dac(self, info: Dict[str, Any]) -> None:
@@ -158,6 +164,18 @@ class EpisodeMetricTracker:
                         self.expert_total_length = float(self.expert_path_cumlen[-1])
                         self._last_seg_idx = None
 
+        if position is not None and self.expert_path_points is not None and self.expert_path_cumlen is not None:
+            timestamp = ego_state.get('timestamp')
+            if timestamp is None:
+                raise KeyError("ego_state.timestamp is required for ProgressSpeed")
+            progress = self._project_progress_for_speed(pos_arr)
+            timestamp_value = float(timestamp)
+            if self.progress_start is None:
+                self.progress_start = progress
+                self.progress_start_time = timestamp_value
+            self.progress_end = progress
+            self.progress_end_time = timestamp_value
+
     def _compute_route_completion(self) -> float:
         if self.agent_end is not None and self.expert_total_length is not None and self.expert_total_length > 1e-6:
             progress = self._project_progress_along_path(self.agent_end)
@@ -177,6 +195,19 @@ class EpisodeMetricTracker:
         if expert_disp < 1e-3:
             return 0.0
         return float(np.clip(agent_disp / expert_disp, 0.0, 1.0))
+
+    def _compute_progress_speed(self) -> float:
+        if (
+            self.progress_start is None or
+            self.progress_end is None or
+            self.progress_start_time is None or
+            self.progress_end_time is None
+        ):
+            raise RuntimeError("ProgressSpeed requires route progress and timestamp observations.")
+        elapsed = self.progress_end_time - self.progress_start_time
+        if elapsed <= 0.0:
+            raise RuntimeError(f"ProgressSpeed requires positive elapsed time, got {elapsed}")
+        return float((self.progress_end - self.progress_start) / elapsed)
 
     @staticmethod
     def _compute_cumulative_lengths(points: np.ndarray) -> Optional[np.ndarray]:
@@ -238,3 +269,35 @@ class EpisodeMetricTracker:
         self._last_seg_idx = best_idx
         return best_progress
 
+    def _project_progress_for_speed(self, position: np.ndarray) -> float:
+        if (
+            self.expert_path_points is None or
+            self.expert_path_points.shape[0] < 2 or
+            self.expert_path_cumlen is None
+        ):
+            raise RuntimeError("ProgressSpeed requires an expert path with at least two points.")
+
+        pts = self.expert_path_points
+        cumlen = self.expert_path_cumlen
+        best_progress = None
+        best_dist = np.inf
+
+        for idx in range(len(pts) - 1):
+            p0 = pts[idx]
+            p1 = pts[idx + 1]
+            seg = p1 - p0
+            seg_len = np.linalg.norm(seg)
+            if seg_len < 1e-6:
+                continue
+            t = float(np.dot(position - p0, seg) / (seg_len ** 2))
+            t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
+            proj = p0 + t * seg
+            dist = np.linalg.norm(position - proj)
+            if dist < best_dist:
+                base = float(cumlen[idx]) if idx < len(cumlen) else 0.0
+                best_progress = base + t * seg_len
+                best_dist = dist
+
+        if best_progress is None:
+            raise RuntimeError("ProgressSpeed failed to project ego position onto expert path.")
+        return float(best_progress)

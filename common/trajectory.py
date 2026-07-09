@@ -18,9 +18,41 @@ def smooth_1d(arr, kernel_size=5):
     return smoothed.astype(np.float32)
 
 
-def traj2control(plan_traj, info):
-    """Convert UniAD relative trajectory to ego-frame reference with velocity targets."""
-    horizon = 3.0
+def right_forward_to_front_left(plan_traj):
+    plan_traj = np.asarray(plan_traj, dtype=np.float32)
+    if plan_traj.ndim < 2 or plan_traj.shape[-1] < 2:
+        raise ValueError(f"trajectory must have last dimension >= 2, got {plan_traj.shape}")
+    return np.stack([plan_traj[..., 1], -plan_traj[..., 0]], axis=-1).astype(np.float32)
+
+
+def lidar_to_ego_front_left(plan_traj, lidar_to_ego):
+    plan_traj = np.asarray(plan_traj, dtype=np.float32)
+    if plan_traj.ndim < 2 or plan_traj.shape[-1] < 2:
+        raise ValueError(f"trajectory must have last dimension >= 2, got {plan_traj.shape}")
+
+    lidar_to_ego = np.asarray(lidar_to_ego, dtype=np.float32)
+    if lidar_to_ego.shape != (4, 4):
+        raise ValueError(f"lidar_to_ego must be 4x4, got {lidar_to_ego.shape}")
+
+    lidar_points = np.zeros(plan_traj.shape[:-1] + (4,), dtype=np.float32)
+    lidar_points[..., :2] = plan_traj[..., :2]
+    lidar_points[..., 3] = 1.0
+    ego_points = lidar_points @ lidar_to_ego.T
+    return ego_points[..., :2].astype(np.float32)
+
+
+def front_right_to_front_left(plan_traj):
+    plan_traj = np.asarray(plan_traj, dtype=np.float32)
+    if plan_traj.ndim < 2 or plan_traj.shape[-1] < 2:
+        raise ValueError(f"trajectory must have last dimension >= 2, got {plan_traj.shape}")
+    return np.stack([plan_traj[..., 0], -plan_traj[..., 1]], axis=-1).astype(np.float32)
+
+
+def traj2control(plan_traj, info, horizon=3.0):
+    """Convert (x_front, y_left) relative trajectory to ego-frame control targets."""
+    horizon = float(horizon)
+    if horizon <= 0.0:
+        raise ValueError(f"trajectory horizon must be positive, got {horizon}")
     control_dt = 0.1
 
     N = plan_traj.shape[0]
@@ -28,24 +60,20 @@ def traj2control(plan_traj, info):
     t_orig = np.linspace(dt_in, horizon, N, dtype=np.float32)
     t_ref = np.concatenate(([0.0], t_orig))
 
-    x_right_orig = plan_traj[:, 0]
-    y_forward_orig = plan_traj[:, 1]
+    x_forward_orig = plan_traj[:, 0]
+    y_left_orig = plan_traj[:, 1]
 
-    x_right_ref = np.concatenate(([0.0], x_right_orig))
-    y_forward_ref = np.concatenate(([0.0], y_forward_orig))
+    x_forward_ref = np.concatenate(([0.0], x_forward_orig))
+    y_left_ref = np.concatenate(([0.0], y_left_orig))
 
-    x_right_ref_smooth = smooth_1d(x_right_ref, kernel_size=5)
-    y_forward_ref_smooth = smooth_1d(y_forward_ref, kernel_size=5)
+    x_forward_ref_smooth = smooth_1d(x_forward_ref, kernel_size=5)
+    y_left_ref_smooth = smooth_1d(y_left_ref, kernel_size=5)
 
     t_new = np.arange(control_dt, horizon + 1e-6, control_dt, dtype=np.float32)
     M = t_new.shape[0]
 
-    x_right_new = np.interp(t_new, t_ref, x_right_ref_smooth)
-    y_forward_new = np.interp(t_new, t_ref, y_forward_ref_smooth)
-
-    # Convert LiDAR (x_right, y_forward) -> ego (x_forward, y_left)
-    x_forward_new = y_forward_new
-    y_left_new = -x_right_new
+    x_forward_new = np.interp(t_new, t_ref, x_forward_ref_smooth)
+    y_left_new = np.interp(t_new, t_ref, y_left_ref_smooth)
     plan_traj_ego = np.stack([x_forward_new, y_left_new], axis=1)
 
     plan_traj_stats = np.zeros((M + 1, 5), dtype=np.float32)

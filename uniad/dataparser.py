@@ -8,14 +8,21 @@ import math
 
 # Coordinate definitions:
 # World/Ego frame follows NuScenes/UniAD (x-forward, y-left, z-up).
-# LiDAR shares the same axes but is rigidly translated from ego origin.
-LIDAR_OFFSET = np.array([0.5, 0.0, 1.50], dtype=np.float32)  # meters (front, left, up)
-lidar2ego = np.array([[0, 1, 0], [-1, 0, 0], [0, 0, 1]], dtype=np.float32)
+# LiDAR_TOP calibration matches nuScenes trainval metadata.
+LIDAR_OFFSET = np.array([0.943713, 0.0, 1.84023], dtype=np.float32)  # meters (front, left, up)
+lidar2ego = np.array(
+    [
+        [0.0020332718, 0.99970406, 0.024241721],
+        [-0.9999805, 0.002175657, -0.005848639],
+        [-0.00589965, -0.024229359, 0.99968904],
+    ],
+    dtype=np.float32,
+)
 LIDAR_TO_EGO_4X4 = np.array(
     [
-        [0, 1, 0, 0.5],
-        [-1, 0, 0, 0.0],
-        [0, 0, 1, 1.5],
+        [0.0020332718, 0.99970406, 0.024241721, 0.943713],
+        [-0.9999805, 0.002175657, -0.005848639, 0.0],
+        [-0.00589965, -0.024229359, 0.99968904, 1.84023],
         [0, 0, 0, 1.0],
     ],
     dtype=np.float32,
@@ -71,12 +78,8 @@ def parse_raw(obs, info, cameras, img_norm_cfg):
     # Keep legacy behavior: `timestamp` is relative timestamp.
     timestamp = float(info["relative_timestamp"])
     
-    f2w = np.eye(4)
-    f2w[:3, :3] = R_world_ego
-    f2w[:3, 3] = ego_pos
-
-    # LiDAR pose in world coordinates (LiDAR shares ego axes, only translated)
-    l2g_r_mat = R_world_ego @ lidar2ego
+    # UniAD uses row-vector transforms for l2g: points @ l2g_r_mat + l2g_t.
+    l2g_r_mat = (R_world_ego @ lidar2ego).T
     l2g_t = ego_pos + R_world_ego @ LIDAR_OFFSET
 
     can_bus = np.zeros(18)
@@ -84,15 +87,15 @@ def parse_raw(obs, info, cameras, img_norm_cfg):
     v_quat = SCR.from_euler('XYZ', ego_rot).as_quat()[[3, 0, 1, 2]]
     can_bus[3:7] = v_quat
 
-    # UniAD 期望的 CAN 布局: [pos(3), quat(4), vel(3), acc(3), ang_vel(3), pad(2)]
-    linear_vel = info['linear_velocity']
-    can_bus[7:10] = R_world_ego.T @ linear_vel
-
+    # Match nuScenes CAN pose layout used by UniAD/OpenDriveVLA.
     linear_acc = info['linear_acceleration']
-    can_bus[10:13] = R_world_ego.T @ linear_acc
+    can_bus[7:10] = R_world_ego.T @ linear_acc
 
     angular_vel = info['angular_velocity']
-    can_bus[13:16] = angular_vel
+    can_bus[10:13] = angular_vel
+
+    linear_vel = info['linear_velocity']
+    can_bus[13:16] = R_world_ego.T @ linear_vel
     
     yaw = ego_rot[2]
     if yaw < 0:
@@ -105,15 +108,16 @@ def parse_raw(obs, info, cameras, img_norm_cfg):
         'can_bus': can_bus,
         'img_shape': imgs_shape,
         'lidar2img': l2imgs,
+        'l2g_r_mat': l2g_r_mat,
         'intrinsics': intrinsics,
     }
     data = {
-        'img': imgs, 
+        'img': [imgs],
         'img_metas': [[img_metas]],
-        'l2g_t': torch.tensor(l2g_t).float(),
-        'l2g_r_mat': torch.tensor(l2g_r_mat).float(),
-        'timestamp': timestamp,
-        'command': [torch.tensor([info['command']]).cuda()], # 0 right, 1 left, 2 straight
+        'l2g_t': torch.tensor(l2g_t, dtype=torch.float32, device=imgs.device)[None, :],
+        'l2g_r_mat': torch.tensor(l2g_r_mat, dtype=torch.float32, device=imgs.device)[None, :, :],
+        'timestamp': [torch.tensor([timestamp], dtype=torch.float64, device=imgs.device)],
+        'command': [torch.tensor([info['command']], dtype=torch.long, device=imgs.device)], # 0 right, 1 left, 2 straight
         'raw_imgs': raw_imgs,
     }
 

@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import os
 import re
 from collections import deque
 from typing import Any, Deque, Dict, Sequence, Tuple
 
 import numpy as np
-from openai import OpenAI
 
 from rl_framework.common.trajectory import traj2control
+from rl_framework.openemma.backbone import OpenEMMABackendName, OpenEMMAOfficialVLM
 from rl_framework.openemma.dataparser import (
     OpenEMMAHistoryFrame,
     history_frame_from_observation,
@@ -22,13 +21,12 @@ class OpenEMMANativeAgent:
     def __init__(
         self,
         *,
-        model: str = "gpt-5.5",
-        reasoning_effort: str = "medium",
+        model: OpenEMMABackendName = "gpt",
+        model_id: str | None = None,
         history_len: int = 10,
         history_stride: int = 5,
         motion_dt: float = 0.1,
         prediction_dt: float = 0.5,
-        max_completion_tokens: int = 400,
         camera: str = "FRONT",
         warmup_action: Tuple[float, float] = (0.0, 0.0),
     ):
@@ -39,15 +37,13 @@ class OpenEMMANativeAgent:
         if motion_dt <= 0.0:
             raise ValueError(f"motion_dt must be positive, got {motion_dt}")
         self.model = model
-        self.reasoning_effort = reasoning_effort
+        self.vlm = OpenEMMAOfficialVLM(model, model_id=model_id)
         self.history_len = int(history_len)
         self.history_stride = int(history_stride)
         self.motion_dt = float(motion_dt)
         self.prediction_dt = float(prediction_dt)
-        self.max_completion_tokens = int(max_completion_tokens)
         self.camera = camera
         self.warmup_action = (float(warmup_action[0]), float(warmup_action[1]))
-        self.client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
         self._history: Deque[OpenEMMAHistoryFrame] = deque(maxlen=self.history_len * self.history_stride)
         self._motion_xy: Deque[np.ndarray] = deque(maxlen=self.history_len * self.history_stride)
         self._motion_speeds: Deque[float] = deque(maxlen=self.history_len * self.history_stride)
@@ -93,33 +89,20 @@ class OpenEMMANativeAgent:
         return should_sample
 
     def _chat(self, text: str, images: Sequence[str], sys_message: str | None = None) -> str:
-        content = [
-            {
-                "type": "input_image",
-                "image_url": f"data:image/jpeg;base64,{image}",
-            }
-            for image in images
-        ]
-        content.append({"type": "input_text", "text": text})
-        request: dict[str, Any] = {
-            "model": self.model,
-            "input": [{"role": "user", "content": content}],
-            "max_output_tokens": self.max_completion_tokens,
-            "reasoning": {"effort": self.reasoning_effort},
-        }
-        if sys_message is not None:
-            request["instructions"] = sys_message
-        result = self.client.responses.create(
-            **request,
-        )
-        if not result.output_text:
-            raise ValueError(f"OpenEMMA response did not contain output text: {result!r}")
-        return result.output_text
+        return self.vlm.infer(text, images, sys_message=sys_message)
 
     def _scene_description(self, images: Sequence[str]) -> str:
         history_seconds = self._history_seconds()
         image_interval = self._image_interval()
-        prompt = f"You are a autonomous driving labeller. You have access to these front-view camera images of a car taken at a {image_interval:.1f} second interval over the past {history_seconds:.1f} seconds. Imagine you are driving the car. Describe the driving scene according to traffic lights, movements of other cars or pedestrians and lane markings."
+        if self.vlm.backend == "llava":
+            prompt = (
+                "You are an autonomous driving labeller. You have access to these front-view camera images of a car "
+                f"taken at a {image_interval:.1f} second interval over the past {history_seconds:.1f} "
+                "seconds. Imagine you are driving the car. Provide a concise description of the driving scene according "
+                "to traffic lights, movements of other cars or pedestrians and lane markings."
+            )
+        else:
+            prompt = f"You are a autonomous driving labeller. You have access to these front-view camera images of a car taken at a {image_interval:.1f} second interval over the past {history_seconds:.1f} seconds. Imagine you are driving the car. Describe the driving scene according to traffic lights, movements of other cars or pedestrians and lane markings."
         return self._chat(prompt, images)
 
     def _object_description(self, images: Sequence[str]) -> str:
@@ -151,7 +134,17 @@ class OpenEMMANativeAgent:
         previous_navigation_hint = self._prev_navigation_hint
         previous_navigation_history_seconds = self._prev_navigation_history_seconds
         if previous_intent is None:
-            prompt = f"You are a autonomous driving labeller. You have access to a front-view camera images of a vehicle taken at a {image_interval:.1f} second interval over the past {history_seconds:.1f} seconds. Imagine you are driving the car. Based on the lane markings and the movement of other cars and pedestrians, describe the desired intent of the ego car. The navigation hint is: {navigation_hint}. Should it maintain the current speed or slow down or speed up?"
+            if self.vlm.backend == "llava":
+                prompt = (
+                    "You are a autonomous driving labeller. You have access to a front-view camera images of a vehicle "
+                    f"taken at a {image_interval:.1f} second interval over the past {history_seconds:.1f} seconds. Imagine "
+                    "you are driving the car. Based on the lane markings and the movement of other cars and pedestrians, "
+                    "provide a concise description of the desired intent of  the ego car. Is it going to follow the lane "
+                    f"to turn left, turn right, or go straight? The navigation hint is: {navigation_hint}. Should it "
+                    "maintain the current speed or slow down or speed up?"
+                )
+            else:
+                prompt = f"You are a autonomous driving labeller. You have access to a front-view camera images of a vehicle taken at a {image_interval:.1f} second interval over the past {history_seconds:.1f} seconds. Imagine you are driving the car. Based on the lane markings and the movement of other cars and pedestrians, describe the desired intent of the ego car. The navigation hint is: {navigation_hint}. Should it maintain the current speed or slow down or speed up?"
         else:
             if previous_intent_history_seconds is None:
                 raise ValueError("previous_intent_history_seconds is missing while previous_intent is set")
@@ -167,7 +160,19 @@ class OpenEMMANativeAgent:
                     "previous navigation timestamp must match previous intent timestamp, "
                     f"got {previous_navigation_history_seconds} and {previous_intent_history_seconds}"
                 )
-            prompt = f"You are a autonomous driving labeller. You have access to a front-view camera images of a vehicle taken at a {image_interval:.1f} second interval over the past {history_seconds:.1f} seconds. Imagine you are driving the car. {previous_seconds_ago:.1f} seconds ago your intent was to {previous_intent}. At that time the navigation hint was: {previous_navigation_hint}. The current navigation hint is: {navigation_hint}. Based on the updated lane markings and the updated movement of other cars and pedestrians, do you keep your intent or do you change it? Explain your current intent: "
+            if self.vlm.backend == "llava":
+                prompt = (
+                    "You are a autonomous driving labeller. You have access to a front-view camera images of a vehicle "
+                    f"taken at a {image_interval:.1f} second interval over the past {history_seconds:.1f} seconds. Imagine "
+                    f"you are driving the car. {previous_seconds_ago:.1f} seconds ago your intent was to {previous_intent}. "
+                    f"At that time the navigation hint was: {previous_navigation_hint}. The current navigation hint is: "
+                    f"{navigation_hint}. Based on the updated lane markings and the updated movement of other cars and "
+                    "pedestrians, do you keep your intent or do you change it? Provide a concise description explanation "
+                    "of your current intent: "
+                )
+            else:
+                prompt = f"You are a autonomous driving labeller. You have access to a front-view camera images of a vehicle taken at a {image_interval:.1f} second interval over the past {history_seconds:.1f} seconds. Imagine you are driving the car. {previous_seconds_ago:.1f} seconds ago your intent was to {previous_intent}. At that time the navigation hint was: {previous_navigation_hint}. The current navigation hint is: {navigation_hint}. Based on the updated lane markings and the updated movement of other cars and pedestrians, do you keep your intent or do you change it? Explain your current intent: "
+
         return (
             self._chat(prompt, images),
             navigation_hint,

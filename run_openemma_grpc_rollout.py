@@ -142,12 +142,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout", type=float, default=360.0, help="gRPC timeout seconds")
     parser.add_argument("--output-dir", type=str, default="./tmp_openemma", help="Output video directory")
     parser.add_argument("--scene-name", type=str, default=None, help="Run only this scene name")
-    parser.add_argument("--model", type=str, default="gpt-5.5", help="OpenAI model for OpenEMMA")
-    parser.add_argument("--reasoning-effort", type=str, default="medium", help="OpenAI reasoning effort")
     parser.add_argument("--history-len", type=int, default=10, help="OpenEMMA history frame count")
     parser.add_argument("--history-stride", type=int, default=5, help="StreetWorld steps per OpenEMMA history frame")
     parser.add_argument("--prediction-dt", type=float, default=0.5, help="Seconds between OpenEMMA predicted points")
-    parser.add_argument("--max-completion-tokens", type=int, default=400, help="OpenAI max completion tokens")
+    parser.add_argument(
+        "--model",
+        choices=("gpt", "qwen", "llava", "llama"),
+        default="gpt",
+        help="Official OpenEMMA backend",
+    )
+    parser.add_argument(
+        "--model-id",
+        default=None,
+        help=(
+            "Model ID or local model path. Defaults: gpt-4o-2024-11-20; "
+            "Qwen/Qwen2-VL-7B-Instruct; "
+            "liuhaotian/llava-v1.6-mistral-7b; "
+            "meta-llama/Llama-3.2-11B-Vision-Instruct"
+        ),
+    )
     parser.add_argument("--debug-jsonl", type=str, default="", help="Optional per-step OpenEMMA debug JSONL path")
     return parser.parse_args()
 
@@ -169,12 +182,11 @@ def main() -> int:
 
     agent = OpenEMMANativeAgent(
         model=args.model,
-        reasoning_effort=args.reasoning_effort,
+        model_id=args.model_id,
         history_len=args.history_len,
         history_stride=args.history_stride,
         motion_dt=args.step_size,
         prediction_dt=args.prediction_dt,
-        max_completion_tokens=args.max_completion_tokens,
     )
 
     env = GrpcClientEnv(host=args.host, port=args.port, timeout_sec=args.timeout, auto_wait_ready=True)

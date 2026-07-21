@@ -66,14 +66,11 @@ def traj2control(plan_traj, info, horizon=3.0):
     x_forward_ref = np.concatenate(([0.0], x_forward_orig))
     y_left_ref = np.concatenate(([0.0], y_left_orig))
 
-    x_forward_ref_smooth = smooth_1d(x_forward_ref, kernel_size=5)
-    y_left_ref_smooth = smooth_1d(y_left_ref, kernel_size=5)
-
     t_new = np.arange(control_dt, horizon + 1e-6, control_dt, dtype=np.float32)
     M = t_new.shape[0]
 
-    x_forward_new = np.interp(t_new, t_ref, x_forward_ref_smooth)
-    y_left_new = np.interp(t_new, t_ref, y_left_ref_smooth)
+    x_forward_new = np.interp(t_new, t_ref, x_forward_ref)
+    y_left_new = np.interp(t_new, t_ref, y_left_ref)
     plan_traj_ego = np.stack([x_forward_new, y_left_new], axis=1)
 
     plan_traj_stats = np.zeros((M + 1, 5), dtype=np.float32)

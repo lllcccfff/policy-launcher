@@ -270,7 +270,6 @@ def main() -> int:
                                     "scene": scene_name,
                                     "step": steps,
                                     "action": [float(action[0]), float(action[1])],
-                                    "agent": agent.last_debug,
                                 },
                                 sort_keys=True,
                             )

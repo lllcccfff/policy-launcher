@@ -64,16 +64,18 @@ class AlpamayoR1NativeAgent:
         self.max_generation_length = int(max_generation_length)
         self._image_history: Deque[Dict[str, np.ndarray]] = deque(maxlen=HISTORY_STEPS)
         self._ego_history: Deque[EgoFrame] = deque(maxlen=HISTORY_STEPS)
+        self.last_trajectory: np.ndarray | None = None
 
     def reset(self) -> None:
         self._image_history.clear()
         self._ego_history.clear()
+        self.last_trajectory = None
 
-    def predict(
+    def predict_action(
         self,
         obs_img: Dict[str, Any],
         obs_info: Dict[str, Any],
-    ) -> Tuple[np.ndarray, Tuple[float, float]]:
+    ) -> Tuple[float, float]:
         self._append_observation(obs_img, obs_info)
         image_frames = self._image_frames_tensor()
         ego_history_xyz, ego_history_rot = self._ego_history_tensors()
@@ -111,10 +113,11 @@ class AlpamayoR1NativeAgent:
         if trajectory.shape != (64, 3):
             raise ValueError(f"Alpamayo R1 must predict a 64x3 trajectory, got {trajectory.shape}")
         acc, steer = traj2control(trajectory[:, :2], obs_info, horizon=PREDICTION_HORIZON_S)
-        return trajectory, (float(steer), float(acc))
+        self.last_trajectory = trajectory
+        return float(steer), float(acc)
 
     def _append_observation(self, obs_img: Dict[str, Any], obs_info: Dict[str, Any]) -> None:
-        frames = {name: self._latest_rgb(obs_img, name) for name in set(self.camera_sources)}
+        frames = {name: obs_img[name] for name in self.camera_sources}
         position = _vec3(obs_info["ego_pos"], "ego_pos")
         euler_xyz = _vec3(obs_info["ego_rot"], "ego_rot")
         rotation = SCR.from_euler("XYZ", euler_xyz, degrees=False).as_matrix().astype(np.float32)
@@ -126,19 +129,6 @@ class AlpamayoR1NativeAgent:
             return
         self._image_history.append(frames)
         self._ego_history.append(EgoFrame(position=position, rotation=rotation))
-
-    @staticmethod
-    def _latest_rgb(obs_img: Dict[str, Any], camera_name: str) -> np.ndarray:
-        if camera_name not in obs_img:
-            raise KeyError(f"Alpamayo R1 requires camera {camera_name!r}; got {sorted(obs_img)}")
-        frame = np.asarray(obs_img[camera_name])
-        if frame.ndim == 4:
-            frame = frame[-1]
-        if frame.ndim != 3 or frame.shape[2] != 3:
-            raise ValueError(f"{camera_name} image must have shape HxWx3 or TxHxWx3, got {frame.shape}")
-        if frame.dtype != np.uint8:
-            raise TypeError(f"{camera_name} image must be uint8 RGB, got {frame.dtype}")
-        return np.ascontiguousarray(frame.copy())
 
     def _image_frames_tensor(self) -> torch.Tensor:
         if len(self._image_history) < IMAGE_HISTORY_STEPS:

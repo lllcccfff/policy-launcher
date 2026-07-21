@@ -20,20 +20,12 @@ OFFICIAL_MODEL_IDS: dict[OpenEMMABackendName, str] = {
     "llama": "meta-llama/Llama-3.2-11B-Vision-Instruct",
 }
 
-
-def resolve_model_id(backend: OpenEMMABackendName, model_id: str | None) -> str:
-    if backend not in OFFICIAL_MODEL_IDS:
-        choices = ", ".join(OFFICIAL_MODEL_IDS)
-        raise ValueError(f"Unsupported OpenEMMA backend {backend!r}. Expected one of: {choices}")
-    return OFFICIAL_MODEL_IDS[backend] if model_id is None else model_id
-
-
 class OpenEMMAOfficialVLM:
     """OpenEMMA's official backend-specific model loading and generation paths."""
 
     def __init__(self, backend: OpenEMMABackendName, model_id: str | None = None):
         self.backend = backend
-        self.model_id = resolve_model_id(backend, model_id)
+        self.model_id = OFFICIAL_MODEL_IDS[backend] if model_id is None else model_id
         self._model: Any | None = None
         self._processor: Any | None = None
         self._tokenizer: Any | None = None
@@ -55,12 +47,6 @@ class OpenEMMAOfficialVLM:
     @staticmethod
     def _decode_image(image_base64: str) -> Image.Image:
         return Image.open(BytesIO(base64.b64decode(image_base64))).convert("RGB")
-
-    @staticmethod
-    def _latest_image(image_base64s: Sequence[str]) -> Image.Image:
-        if not image_base64s:
-            raise ValueError("OpenEMMA inference requires at least one camera image")
-        return OpenEMMAOfficialVLM._decode_image(image_base64s[-1])
 
     def _load_qwen(self) -> None:
         import torch
@@ -146,7 +132,7 @@ class OpenEMMAOfficialVLM:
     def _infer_qwen(self, prompt: str, image_base64s: Sequence[str]) -> str:
         from qwen_vl_utils import process_vision_info
 
-        image = self._latest_image(image_base64s)
+        image = self._decode_image(image_base64s[-1])
         message = [
             {
                 "role": "user",
@@ -176,7 +162,7 @@ class OpenEMMAOfficialVLM:
         )[0]
 
     def _infer_llama(self, prompt: str, image_base64s: Sequence[str]) -> str:
-        image = self._latest_image(image_base64s)
+        image = self._decode_image(image_base64s[-1])
         message = [
             {
                 "role": "user",
@@ -228,7 +214,7 @@ class OpenEMMAOfficialVLM:
             IMAGE_TOKEN_INDEX,
             return_tensors="pt",
         ).unsqueeze(0).cuda()
-        image = self._latest_image(image_base64s)
+        image = self._decode_image(image_base64s[-1])
         image_tensor = process_images([image], self._processor, self._model.config)[0]
         with torch.inference_mode():
             output_ids = self._model.generate(

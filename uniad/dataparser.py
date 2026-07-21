@@ -1,23 +1,9 @@
-import os
 import cv2
 import mmcv
 import torch
 import numpy as np
 from scipy.spatial.transform import Rotation as SCR
-import math
 
-# Coordinate definitions:
-# World/Ego frame follows NuScenes/UniAD (x-forward, y-left, z-up).
-# LiDAR_TOP calibration matches nuScenes trainval metadata.
-LIDAR_OFFSET = np.array([0.943713, 0.0, 1.84023], dtype=np.float32)  # meters (front, left, up)
-lidar2ego = np.array(
-    [
-        [0.0020332718, 0.99970406, 0.024241721],
-        [-0.9999805, 0.002175657, -0.005848639],
-        [-0.00589965, -0.024229359, 0.99968904],
-    ],
-    dtype=np.float32,
-)
 LIDAR_TO_EGO_4X4 = np.array(
     [
         [0.0020332718, 0.99970406, 0.024241721, 0.943713],
@@ -27,90 +13,90 @@ LIDAR_TO_EGO_4X4 = np.array(
     ],
     dtype=np.float32,
 )
+CAMERA_ORDER = ("FRONT", "FRONT_RIGHT", "FRONT_LEFT", "BACK", "BACK_LEFT", "BACK_RIGHT")
+UNIAD_IMG_NORM_CFG = {
+    "mean": np.array([103.530, 116.280, 123.675], dtype=np.float32),
+    "std": np.array([1.0, 1.0, 1.0], dtype=np.float32),
+    "to_rgb": False,
+}
 
-def _to_k4(cam_info):
-    k = np.asarray(cam_info["K"], dtype=np.float32)
-    if k.shape == (4, 4):
-        return k
-    if k.shape == (3, 3):
-        k4 = np.eye(4, dtype=np.float32)
-        k4[:3, :3] = k
-        return k4
-    raise ValueError(f"`K` must be 3x3 or 4x4, got {k.shape}")
+def build_can_bus(info, r_world_ego):
+    ego_rot = info["ego_rot"]
+    ego_pos = info["ego_pos"]
 
-def _to_l2c(cam_info):
-    ego2camera = np.asarray(cam_info["ego2camera"], dtype=np.float32)
-    if ego2camera.shape != (4, 4):
-        raise ValueError(f"`ego2camera` must be 4x4, got {ego2camera.shape}")
-    return ego2camera @ LIDAR_TO_EGO_4X4
-
-def parse_raw(obs, info, cameras, img_norm_cfg):
-    ego_rot = np.asarray(info['ego_rot'], dtype=np.float32)
-    ego_pos = np.asarray(info['ego_pos'], dtype=np.float32)
-    R_world_ego = SCR.from_euler('XYZ', ego_rot).as_matrix().astype(np.float32)
-
-    imgs_shape = []
-    imgs = []
-    raw_imgs = []
-    l2imgs, intrinsics = [], []
-
-    for cam in cameras:
-        im = obs[cam]
-        
-        if len(im.shape) == 4:
-            im = im[-1]
-        
-        # Attention: If the image size is not 900X1600, the intrinsic params needs to be rescaled
-        im = cv2.resize(im, (1600, 900))
-        im_norm = mmcv.imnormalize(im, img_norm_cfg['mean'], img_norm_cfg['std'], img_norm_cfg['to_rgb'])
-        imgs_shape.append(list(im_norm.shape))
-        im_norm = torch.from_numpy(im_norm).permute(2, 0, 1)
-        imgs.append(im_norm)
-        raw_imgs.append(im)
-        cam_info = info['cam_params'][cam]
-        l2c = _to_l2c(cam_info)
-        K = _to_k4(cam_info)
-        l2imgs.append(K @ l2c)
-        intrinsics.append(K) 
-
-    imgs = torch.stack(imgs)[None, ...]
-    imgs = imgs.cuda()
-    # Keep legacy behavior: `timestamp` is relative timestamp.
-    timestamp = float(info["relative_timestamp"])
-    
-    # UniAD uses row-vector transforms for l2g: points @ l2g_r_mat + l2g_t.
-    l2g_r_mat = (R_world_ego @ lidar2ego).T
-    l2g_t = ego_pos + R_world_ego @ LIDAR_OFFSET
-
-    can_bus = np.zeros(18)
+    can_bus = np.zeros(18, dtype=np.float64)
     can_bus[:3] = ego_pos
-    v_quat = SCR.from_euler('XYZ', ego_rot).as_quat()[[3, 0, 1, 2]]
-    can_bus[3:7] = v_quat
+    can_bus[3:7] = SCR.from_euler("XYZ", ego_rot).as_quat()[[3, 0, 1, 2]]
+    can_bus[7:10] = r_world_ego.T @ info["linear_acceleration"]
+    can_bus[10:13] = info["angular_velocity"]
+    can_bus[13:16] = r_world_ego.T @ info["linear_velocity"]
 
-    # Match nuScenes CAN pose layout used by UniAD/OpenDriveVLA.
-    linear_acc = info['linear_acceleration']
-    can_bus[7:10] = R_world_ego.T @ linear_acc
-
-    angular_vel = info['angular_velocity']
-    can_bus[10:13] = angular_vel
-
-    linear_vel = info['linear_velocity']
-    can_bus[13:16] = R_world_ego.T @ linear_vel
-    
-    yaw = ego_rot[2]
+    yaw = float(ego_rot[2])
     if yaw < 0:
         yaw += np.pi * 2
     can_bus[-2] = yaw
     can_bus[-1] = yaw / np.pi * 180
+    return can_bus
 
+
+def build_image_input(obs, info, camera_order, img_norm_cfg, image_scale):
+    r_world_ego = SCR.from_euler("XYZ", info["ego_rot"]).as_matrix().astype(np.float32)
+    ego_to_global = np.eye(4, dtype=np.float32)
+    ego_to_global[:3, :3] = r_world_ego
+    ego_to_global[:3, 3] = info["ego_pos"]
+    lidar_to_global = ego_to_global @ LIDAR_TO_EGO_4X4
+    lidar2img = []
+    img_shapes = []
+    tensors = []
+
+    for cam in camera_order:
+        image = obs[cam]
+        image = np.asarray(image, dtype=np.float32)
+        if image_scale != 1.0:
+            height, width = image.shape[:2]
+            image = cv2.resize(image, (int(round(width * image_scale)), int(round(height * image_scale))))
+
+        image = mmcv.imnormalize(
+            image,
+            img_norm_cfg["mean"],
+            img_norm_cfg["std"],
+            img_norm_cfg["to_rgb"],
+        )
+        img_shapes.append(list(image.shape))
+        tensors.append(torch.from_numpy(image).permute(2, 0, 1))
+
+        cam_info = info["cam_params"][cam]
+        k = cam_info["K"]
+        ego2camera = cam_info["ego2camera"]
+        k4 = np.eye(4, dtype=np.float32)
+        k4[:3, :3] = k
+        k4[0, :] *= image_scale
+        k4[1, :] *= image_scale
+        lidar2img.append(k4 @ ego2camera @ LIDAR_TO_EGO_4X4)
+
+    image_tensor = torch.stack(tensors, dim=0).unsqueeze(0).float().cuda()
     img_metas = {
-        'scene_token': info['scene_token'],
-        'can_bus': can_bus,
-        'img_shape': imgs_shape,
-        'lidar2img': l2imgs,
-        'l2g_r_mat': l2g_r_mat,
-        'intrinsics': intrinsics,
+        "scene_token": info["scene_token"],
+        "can_bus": build_can_bus(info, r_world_ego),
+        "img_shape": img_shapes,
+        "lidar2img": lidar2img,
+        "l2g_r_mat": lidar_to_global[:3, :3].T,
+        "l2g_t": lidar_to_global[:3, 3],
     }
+    return image_tensor, img_metas
+
+
+def parse_uniad_obs(obs, info):
+    imgs, img_metas = build_image_input(
+        obs,
+        info,
+        CAMERA_ORDER,
+        UNIAD_IMG_NORM_CFG,
+        image_scale=1.0,
+    )
+    timestamp = float(info["relative_timestamp"])
+    l2g_r_mat = img_metas["l2g_r_mat"]
+    l2g_t = img_metas["l2g_t"]
     data = {
         'img': [imgs],
         'img_metas': [[img_metas]],
@@ -118,11 +104,6 @@ def parse_raw(obs, info, cameras, img_norm_cfg):
         'l2g_r_mat': torch.tensor(l2g_r_mat, dtype=torch.float32, device=imgs.device)[None, :, :],
         'timestamp': [torch.tensor([timestamp], dtype=torch.float64, device=imgs.device)],
         'command': [torch.tensor([info['command']], dtype=torch.long, device=imgs.device)], # 0 right, 1 left, 2 straight
-        'raw_imgs': raw_imgs,
     }
 
     return data
-
-
-def parse_uniad_obs(obs, info, cameras, img_norm_cfg):
-    return parse_raw(obs, info, cameras, img_norm_cfg)

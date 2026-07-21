@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
 import numpy as np
@@ -69,33 +68,6 @@ def _save_action_plot(plot_path: Path, steering: list[float], th_brk: list[float
     plt.close(fig)
 
 
-def _route_alignment_debug(obs_info: dict, target_point_index: int) -> dict:
-    del target_point_index
-    raw_waypoints = np.asarray(obs_info["route_waypoints"], dtype=np.float32)[:, :2]
-    waypoints = np.asarray(obs_info.get("latent_transfuser_route_waypoints", raw_waypoints), dtype=np.float32)[:, :2]
-    ego_pos = np.asarray(obs_info["ego_pos"], dtype=np.float32).reshape(-1)[:2]
-    pop_idx = int(obs_info["latent_transfuser_route_pop_idx"])
-    target_idx = int(obs_info["latent_transfuser_target_route_idx"])
-    if pop_idx < 0 or pop_idx >= waypoints.shape[0]:
-        raise ValueError(f"latent_transfuser_route_pop_idx {pop_idx} is outside route length {waypoints.shape[0]}")
-    if target_idx < 0 or target_idx >= waypoints.shape[0]:
-        raise ValueError(f"latent_transfuser_target_route_idx {target_idx} is outside route length {waypoints.shape[0]}")
-    start = max(0, pop_idx - 2)
-    end = min(waypoints.shape[0], target_idx + 3)
-    return {
-        "route_type": str(obs_info["route_type"]),
-        "ego_pos": ego_pos.astype(float).tolist(),
-        "heading_theta": float(obs_info["heading_theta"]),
-        "raw_route_len": int(raw_waypoints.shape[0]),
-        "downsampled_route_len": int(waypoints.shape[0]),
-        "route_sample_distance": float(obs_info.get("latent_transfuser_route_sample_distance", 0.0)),
-        "route_pop_idx": pop_idx,
-        "target_route_idx": target_idx,
-        "target_route_world": waypoints[target_idx].astype(float).tolist(),
-        "route_window": waypoints[start:end].astype(float).tolist(),
-    }
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Latent TransFuser on gRPC env and save videos to ./tmp")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="gRPC server host")
@@ -108,8 +80,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--transfuser-root", type=str, default=DEFAULT_TRANSFUSER_ROOT, help="TransFuser checkout root")
     parser.add_argument("--model-dir", type=str, default=DEFAULT_LATENT_TF_MODEL_DIR, help="Latent TransFuser checkpoint dir")
     parser.add_argument("--checkpoint-path", type=str, default="", help="Optional single checkpoint path")
-    parser.add_argument("--target-point-index", type=int, default=4, help="Navigation waypoint index used as target point")
-    parser.add_argument("--debug-jsonl", type=str, default="", help="Optional per-step Latent TransFuser debug JSONL path")
     return parser.parse_args()
 
 
@@ -123,11 +93,6 @@ def main() -> int:
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    debug_file = None
-    if args.debug_jsonl:
-        debug_path = Path(args.debug_jsonl)
-        debug_path.parent.mkdir(parents=True, exist_ok=True)
-        debug_file = debug_path.open("w", encoding="utf-8")
 
     latent_config = {
         "transfuser_root": args.transfuser_root,
@@ -137,7 +102,7 @@ def main() -> int:
     if args.checkpoint_path:
         latent_config["checkpoint_path"] = args.checkpoint_path
     bundle = create_latent_transfuser(latent_config)
-    agent = LatentTransFuserNativeAgent(bundle, target_point_index=args.target_point_index)
+    agent = LatentTransFuserNativeAgent(bundle)
 
     env = GrpcClientEnv(host=args.host, port=args.port, timeout_sec=args.timeout, auto_wait_ready=True)
     camera_layout = [
@@ -199,21 +164,6 @@ def main() -> int:
                     action = agent.predict_action(obs_img, obs_info)
                     steering_trace.append(float(action[0]))
                     th_brk_trace.append(float(action[1]))
-                    if debug_file is not None:
-                        debug_file.write(
-                            json.dumps(
-                                {
-                                    "scene": scene_name,
-                                    "step": steps,
-                                    "action": [float(action[0]), float(action[1])],
-                                    "route": _route_alignment_debug(obs_info, args.target_point_index),
-                                    "agent": agent.last_debug,
-                                },
-                                sort_keys=True,
-                            )
-                            + "\n"
-                        )
-                        debug_file.flush()
                     obs, reward, terminated, truncated, step_info = env.step(action)
                     last_step_info = step_info
                     obs_img, obs_info, _, _ = unpack_ad_observation(obs)
@@ -243,8 +193,6 @@ def main() -> int:
 
     finally:
         env.close()
-        if debug_file is not None:
-            debug_file.close()
 
     return 0
 

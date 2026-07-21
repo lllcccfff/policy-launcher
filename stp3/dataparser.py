@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import sys
 from pathlib import Path
 from typing import Any, Dict, Sequence, Tuple, Union
@@ -9,7 +8,6 @@ import numpy as np
 import torch
 import torchvision
 from PIL import Image
-from pyquaternion import Quaternion
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_STP3_ROOT = REPO_ROOT / "ST-P3"
@@ -33,15 +31,6 @@ import stp3.utils.sampler as trajectory_sampler  # noqa: E402
 
 CAMERA_ORDER = ("FRONT", "FRONT_LEFT", "FRONT_RIGHT", "BACK")
 IMAGE_CROP = 256
-CAMERA_WIDTH = 400
-CAMERA_HEIGHT = 300
-CAMERA_FOCAL = 330.0
-CAMERA_OFFSETS = {
-    "FRONT": (1.70079118954, 0.0159456324149, 1.51095763913),
-    "FRONT_LEFT": (1.52387798135, 0.494631336551, 1.50932822144),
-    "FRONT_RIGHT": (1.5508477543, -0.493404796419, 1.49574800619),
-    "BACK": (0.0283260309358, 0.00345136761476, 1.57910346144),
-}
 CARLA_SAMPLE_INTERVAL = 0.5
 
 NORMALISE_IMAGE = torchvision.transforms.Compose(
@@ -52,71 +41,48 @@ NORMALISE_IMAGE = torchvision.transforms.Compose(
 )
 
 
-def _latest_rgb(obs_img: Dict[str, Any], camera: str) -> np.ndarray:
-    arr = np.asarray(obs_img[camera])
-    if arr.ndim == 4:
-        arr = arr[-1]
-    if arr.ndim != 3 or arr.shape[2] < 3:
-        raise ValueError(f"{camera} image must have shape HxWx3 or TxHxWx3, got {arr.shape}")
-    return np.ascontiguousarray(arr[:, :, :3].astype(np.uint8))
-
-
-def _preprocess_image(image_rgb: np.ndarray) -> torch.Tensor:
-    cropped = scale_and_crop_image(Image.fromarray(image_rgb), scale=1.0, crop=IMAGE_CROP)
-    return NORMALISE_IMAGE(np.asarray(cropped).copy()).to(dtype=torch.float32)
-
-
 def build_image_tensor(
     history_images: Sequence[Dict[str, Any]],
     device: torch.device,
 ) -> torch.Tensor:
     frames = []
     for obs_img in history_images:
-        camera_tensors = [_preprocess_image(_latest_rgb(obs_img, camera)) for camera in CAMERA_ORDER]
+        camera_tensors = []
+        for camera in CAMERA_ORDER:
+            image_rgb = obs_img[camera]
+            cropped = scale_and_crop_image(Image.fromarray(image_rgb), scale=1.0, crop=IMAGE_CROP)
+            camera_tensors.append(NORMALISE_IMAGE(cropped.copy()))
         frames.append(torch.stack(camera_tensors, dim=0))
-    return torch.stack(frames, dim=0).unsqueeze(0).to(device=device, dtype=torch.float32)
+    return torch.stack(frames, dim=0).unsqueeze(0).to(device=device)
 
 
-def _camera_to_ego(dof: Sequence[float]) -> np.ndarray:
-    yaw = math.radians(float(dof[5]))
-    rotation = Quaternion(scalar=np.cos(yaw / 2.0), vector=[0.0, 0.0, np.sin(yaw / 2.0)])
-    translation = np.asarray(dof[:3], dtype=np.float32)[:, None]
-    return np.vstack(
-        [
-            np.hstack((rotation.rotation_matrix.astype(np.float32), translation)),
-            np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
-        ]
-    ).astype(np.float32)
+def camera_parameters(
+    cam_params: Dict[str, Dict[str, Any]],
+    receptive_field: int,
+    device: torch.device,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    extrinsics = []
+    intrinsics = []
+    for camera in CAMERA_ORDER:
+        cam_info = cam_params[camera]
+        extrinsics.append(np.linalg.inv(np.asarray(cam_info["ego2camera"], dtype=np.float32)))
 
+        height = int(cam_info["H"])
+        width = int(cam_info["W"])
+        intrinsics.append(
+            update_intrinsics(
+                torch.as_tensor(cam_info["K"], dtype=torch.float32),
+                height // 2 - IMAGE_CROP // 2,
+                width // 2 - IMAGE_CROP // 2,
+                scale_width=1.0,
+                scale_height=1.0,
+            )
+        )
 
-def fixed_camera_parameters(receptive_field: int, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]:
-    camera_dofs = [
-        [*CAMERA_OFFSETS["FRONT"], 0.0, 0.0, 0.0],
-        [*CAMERA_OFFSETS["FRONT_LEFT"], 0.0, 0.0, -60.0],
-        [*CAMERA_OFFSETS["FRONT_RIGHT"], 0.0, 0.0, 60.0],
-        [*CAMERA_OFFSETS["BACK"], 0.0, 0.0, 180.0],
-    ]
-    extrinsics = torch.from_numpy(np.stack([_camera_to_ego(dof) for dof in camera_dofs], axis=0)).float()
-
-    intrinsic = torch.tensor(
-        [
-            [CAMERA_FOCAL, 0.0, CAMERA_WIDTH / 2.0],
-            [0.0, CAMERA_FOCAL, CAMERA_HEIGHT / 2.0],
-            [0.0, 0.0, 1.0],
-        ],
-        dtype=torch.float32,
+    extrinsics = torch.from_numpy(np.stack(extrinsics, axis=0)).unsqueeze(0).expand(
+        receptive_field, len(CAMERA_ORDER), 4, 4
     )
-    intrinsic = update_intrinsics(
-        intrinsic,
-        (CAMERA_HEIGHT - IMAGE_CROP) / 2.0,
-        (CAMERA_WIDTH - IMAGE_CROP) / 2.0,
-        scale_width=1.0,
-        scale_height=1.0,
-    )
-    intrinsics = intrinsic.unsqueeze(0).expand(len(CAMERA_ORDER), 3, 3).contiguous()
-
-    extrinsics = extrinsics.unsqueeze(0).expand(receptive_field, len(CAMERA_ORDER), 4, 4)
-    intrinsics = intrinsics.unsqueeze(0).expand(receptive_field, len(CAMERA_ORDER), 3, 3)
+    intrinsics = torch.stack(intrinsics, dim=0).unsqueeze(0).expand(receptive_field, len(CAMERA_ORDER), 3, 3)
     return (
         extrinsics.unsqueeze(0).to(device=device, dtype=torch.float32),
         intrinsics.unsqueeze(0).to(device=device, dtype=torch.float32),
@@ -184,18 +150,11 @@ def command_string(command: Any) -> str:
     return "LANE"
 
 
-def target_point_from_route(obs_info: Dict[str, Any], target_route_idx: int, device: torch.device) -> torch.Tensor:
-    route = np.asarray(obs_info["route_waypoints"], dtype=np.float32)
-    if route.ndim != 2 or route.shape[1] < 2:
-        raise ValueError(f"route_waypoints must have shape Nx2 or NxM, got {route.shape}")
-    if target_route_idx < 0 or target_route_idx >= route.shape[0]:
-        raise ValueError(f"target_route_idx={target_route_idx} outside route length {route.shape[0]}")
-
+def target_point_from_waypoint(obs_info: Dict[str, Any], device: torch.device) -> torch.Tensor:
+    target_waypoint = np.asarray(obs_info["target_waypoint"], dtype=np.float32)
     ego_pos = np.asarray(obs_info["ego_pos"], dtype=np.float32).reshape(-1)
-    if ego_pos.size < 2:
-        raise ValueError(f"ego_pos must contain at least xy, got {ego_pos}")
 
-    delta = route[target_route_idx, :2] - ego_pos[:2]
+    delta = target_waypoint[:2] - ego_pos[:2]
     theta = np.pi / 2.0 + float(obs_info["heading_theta"])
     rot = np.array(
         [
@@ -205,7 +164,7 @@ def target_point_from_route(obs_info: Dict[str, Any], target_route_idx: int, dev
         dtype=np.float32,
     )
     local = rot.T.dot(delta) * np.array([1.0, -1.0], dtype=np.float32)
-    return torch.from_numpy(local.astype(np.float32)).unsqueeze(0).to(device=device, dtype=torch.float32)
+    return torch.from_numpy(local).unsqueeze(0).to(device=device, dtype=torch.float32)
 
 
 def parse_stp3_obs(
@@ -214,22 +173,17 @@ def parse_stp3_obs(
     obs_info: Dict[str, Any],
     cfg: Any,
     device: torch.device,
-    target_route_idx: int,
     last_steer: float,
 ) -> Dict[str, Any]:
     receptive_field = int(cfg.TIME_RECEPTIVE_FIELD)
-    if len(history_images) != receptive_field:
-        raise ValueError(f"Expected {receptive_field} image history frames, got {len(history_images)}")
-    if len(history_states) != receptive_field:
-        raise ValueError(f"Expected {receptive_field} state history frames, got {len(history_states)}")
 
-    extrinsics, intrinsics = fixed_camera_parameters(receptive_field, device)
+    extrinsics, intrinsics = camera_parameters(obs_info["cam_params"], receptive_field, device)
     return {
         "image": build_image_tensor(history_images, device),
         "intrinsics": intrinsics,
         "extrinsics": extrinsics,
         "future_egomotion": build_future_egomotion(history_states, device),
         "sample_trajectory": sample_trajectories(cfg, float(obs_info["ego_velo"]), float(last_steer), device),
-        "target_point": target_point_from_route(obs_info, target_route_idx, device),
+        "target_point": target_point_from_waypoint(obs_info, device),
         "command": [command_string(obs_info["command"])],
     }

@@ -38,25 +38,16 @@ class STP3NativeAgent:
     def __init__(
         self,
         stp3_model: torch.nn.Module,
-        target_point_index: int = 4,
-        route_planner_min_distance: float = 1.0,
-        route_planner_max_distance: float = 50.0,
     ):
         self.model = stp3_model
         self.cfg = stp3_model.cfg
         self.device = self._infer_model_device()
         self.receptive_field = int(self.cfg.TIME_RECEPTIVE_FIELD)
-        self.target_point_index = int(target_point_index)
-        self.route_planner_min_distance = float(route_planner_min_distance)
-        self.route_planner_max_distance = float(route_planner_max_distance)
 
         self.turn_controller = PIDController(k_p=1.25, k_i=0.75, k_d=0.3, n=40)
         self.speed_controller = PIDController(k_p=5.0, k_i=0.5, k_d=1.0, n=40)
         self.last_steer = 0.0
         self.last_pred_traj = None
-        self.last_debug: Dict[str, Any] = {}
-        self._route_scene_token = None
-        self._route_pop_idx = 0
         self._image_history: Deque[Dict[str, Any]] = deque(maxlen=self.receptive_field)
         self._state_history: Deque[Dict[str, Any]] = deque(maxlen=self.receptive_field)
 
@@ -71,119 +62,14 @@ class STP3NativeAgent:
         self.speed_controller = PIDController(k_p=5.0, k_i=0.5, k_d=1.0, n=40)
         self.last_steer = 0.0
         self.last_pred_traj = None
-        self.last_debug = {}
-        self._route_scene_token = None
-        self._route_pop_idx = 0
         self._image_history.clear()
         self._state_history.clear()
-
-    def _sync_route_progress(self, obs_info: Dict[str, Any]) -> int:
-        scene_token = str(obs_info["scene_token"])
-        if self._route_scene_token != scene_token:
-            self._route_scene_token = scene_token
-            self._route_pop_idx = 0
-
-        route = np.asarray(obs_info["route_waypoints"], dtype=np.float32)
-        if route.ndim != 2 or route.shape[1] < 2:
-            raise ValueError(f"route_waypoints must have shape Nx2 or NxM, got {route.shape}")
-        if route.shape[0] < 2:
-            raise ValueError("route_waypoints must contain at least two points")
-
-        ego_xy = np.asarray(obs_info["ego_pos"], dtype=np.float32).reshape(-1)[:2]
-        route_tail = route[self._route_pop_idx :, :2]
-        to_pop = 0
-        farthest_in_range = -np.inf
-        cumulative_distance = 0.0
-        for i in range(1, len(route_tail)):
-            if cumulative_distance > self.route_planner_max_distance:
-                break
-            cumulative_distance += float(np.linalg.norm(route_tail[i] - route_tail[i - 1]))
-            distance = float(np.linalg.norm(route_tail[i] - ego_xy))
-            if distance <= self.route_planner_min_distance and distance > farthest_in_range:
-                farthest_in_range = distance
-                to_pop = i
-
-        max_pop = max(0, route.shape[0] - self._route_pop_idx - 2)
-        self._route_pop_idx += min(to_pop, max_pop)
-        target_route_idx = min(self._route_pop_idx + self.target_point_index, route.shape[0] - 1)
-        obs_info["stp3_route_pop_idx"] = int(self._route_pop_idx)
-        obs_info["stp3_target_route_idx"] = int(target_route_idx)
-        return int(target_route_idx)
-
-    def _prepare_obs_info(self, obs_info: Dict[str, Any]) -> None:
-        obs_info["scene_token"] = str(obs_info["scene_token"])
-        obs_info["command"] = int(obs_info["command"])
-        obs_info["ego_pos"] = np.asarray(obs_info["ego_pos"], dtype=np.float32).reshape(-1)
-        obs_info["heading_theta"] = float(obs_info["heading_theta"])
-        obs_info["ego_velo"] = float(obs_info["ego_velo"])
-        obs_info["ego_steer"] = float(obs_info["ego_steer"])
-
-    def _append_history(self, obs_img: Dict[str, Any], obs_info: Dict[str, Any]) -> None:
-        self._image_history.append(dict(obs_img))
-        self._state_history.append(
-            {
-                "ego_pos": np.asarray(obs_info["ego_pos"], dtype=np.float32).copy(),
-                "heading_theta": float(obs_info["heading_theta"]),
-            }
-        )
-
-    def is_ready(self) -> bool:
-        return len(self._image_history) == self.receptive_field and len(self._state_history) == self.receptive_field
-
-    def prepare_raw_input(self, obs_img: Dict[str, Any], obs_info: Dict[str, Any]) -> Dict[str, Any]:
-        self._prepare_obs_info(obs_info)
-        target_route_idx = self._sync_route_progress(obs_info)
-        self._append_history(obs_img, obs_info)
-        if not self.is_ready():
-            raise RuntimeError(
-                f"ST-P3 needs {self.receptive_field} history frames, "
-                f"got {len(self._image_history)}"
-            )
-        return parse_stp3_obs(
-            list(self._image_history),
-            list(self._state_history),
-            obs_info,
-            self.cfg,
-            self.device,
-            target_route_idx,
-            self.last_steer,
-        )
-
-    def predict_traj_from_raw_data(self, raw_data: Dict[str, Any]) -> np.ndarray:
-        with torch.no_grad():
-            output = self.model(
-                raw_data["image"],
-                raw_data["intrinsics"],
-                raw_data["extrinsics"],
-                raw_data["future_egomotion"],
-            )
-
-            n_present = int(self.model.receptive_field)
-            seg_prediction = torch.argmax(output["segmentation"].detach(), dim=2, keepdim=True)
-            pedestrian_prediction = torch.argmax(output["pedestrian"].detach(), dim=2, keepdim=True)
-            occupancy = torch.logical_or(seg_prediction, pedestrian_prediction)
-
-            _, final_traj = self.model.planning(
-                cam_front=output["cam_front"].detach(),
-                trajs=raw_data["sample_trajectory"][:, :, 1:],
-                gt_trajs=None,
-                cost_volume=output["costvolume"][:, n_present:].detach(),
-                semantic_pred=occupancy[:, n_present:].squeeze(2),
-                hd_map=output["hdmap"].detach(),
-                commands=raw_data["command"],
-                target_points=raw_data["target_point"],
-            )
-
-        final_traj_np = final_traj[0].detach().cpu().numpy().astype(np.float32)
-        self.last_pred_traj = _right_forward_to_front_left(final_traj_np[:, :2])
-        return final_traj_np
 
     def _control_pid(
         self,
         final_traj: np.ndarray,
         velocity: float,
-        command: str,
-    ) -> Tuple[float, float, bool, Dict[str, Any]]:
+    ) -> Tuple[float, float, bool]:
         waypoints = np.asarray(final_traj, dtype=np.float32)[:, :2]
         speed = float(velocity)
 
@@ -199,47 +85,18 @@ class STP3NativeAgent:
         if brake:
             throttle = 0.0
 
-        debug = {
-            "speed": speed,
-            "steer": steer,
-            "throttle": throttle,
-            "brake": brake,
-            "desired_speed": desired_speed,
-            "angle": float(angle),
-            "aim": aim.astype(float).tolist(),
-            "delta": delta,
-            "command": command,
-            "pred_traj_front_left": self.last_pred_traj.astype(float).tolist() if self.last_pred_traj is not None else None,
-        }
-        return steer, throttle, brake, debug
-
-    def predict_action_from_raw_data(self, raw_data: Dict[str, Any], obs_info: Dict[str, Any]) -> Tuple[float, float]:
-        final_traj = self.predict_traj_from_raw_data(raw_data)
-        carla_steer, throttle, brake, debug = self._control_pid(
-            final_traj,
-            float(obs_info["ego_velo"]),
-            str(raw_data["command"][0]),
-        )
-        self.last_steer = float(carla_steer)
-
-        brake_value = 1.0 if brake else 0.0
-        if throttle > brake_value:
-            brake_value = 0.0
-
-        metadrive_steer = float(carla_steer)
-        throttle_brake = -float(brake_value) if brake_value > 0.0 else float(throttle)
-        debug["metadrive_steer"] = metadrive_steer
-        debug["throttle_brake"] = throttle_brake
-        self.last_debug = debug
-        return metadrive_steer, throttle_brake
+        return steer, throttle, brake
 
     def predict_action(self, obs_img: Dict[str, Any], obs_info: Dict[str, Any]) -> Tuple[float, float]:
-        self._prepare_obs_info(obs_info)
-        self._sync_route_progress(obs_info)
-        self._append_history(obs_img, obs_info)
-        if not self.is_ready():
+        self._image_history.append(dict(obs_img))
+        self._state_history.append(
+            {
+                "ego_pos": np.asarray(obs_info["ego_pos"], dtype=np.float32).copy(),
+                "heading_theta": float(obs_info["heading_theta"]),
+            }
+        )
+        if len(self._image_history) < self.receptive_field:
             self.last_pred_traj = None
-            self.last_debug = {"warmup_frames": len(self._image_history), "required_frames": self.receptive_field}
             return 0.0, 0.0
 
         raw_data = parse_stp3_obs(
@@ -248,7 +105,34 @@ class STP3NativeAgent:
             obs_info,
             self.cfg,
             self.device,
-            int(obs_info["stp3_target_route_idx"]),
             self.last_steer,
         )
-        return self.predict_action_from_raw_data(raw_data, obs_info)
+        with torch.no_grad():
+            output = self.model(
+                raw_data["image"],
+                raw_data["intrinsics"],
+                raw_data["extrinsics"],
+                raw_data["future_egomotion"],
+            )
+
+            n_present = int(self.model.receptive_field)
+            segmentation = torch.argmax(output["segmentation"].detach(), dim=2, keepdim=True)
+            pedestrian = torch.argmax(output["pedestrian"].detach(), dim=2, keepdim=True)
+            occupancy = torch.logical_or(segmentation, pedestrian)
+
+            _, final_traj = self.model.planning(
+                cam_front=output["cam_front"].detach(),
+                trajs=raw_data["sample_trajectory"][:, :, 1:],
+                gt_trajs=None,
+                cost_volume=output["costvolume"][:, n_present:].detach(),
+                semantic_pred=occupancy[:, n_present:].squeeze(2),
+                hd_map=output["hdmap"].detach(),
+                commands=raw_data["command"],
+                target_points=raw_data["target_point"],
+            )
+
+        final_traj = final_traj[0].detach().cpu().numpy()
+        self.last_pred_traj = _right_forward_to_front_left(final_traj[:, :2])
+        carla_steer, throttle, brake = self._control_pid(final_traj, float(obs_info["ego_velo"]))
+        self.last_steer = float(carla_steer)
+        return float(carla_steer), -1.0 if brake else float(throttle)

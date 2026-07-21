@@ -67,6 +67,7 @@ class AutoVLANativeAgent:
             logical: deque(maxlen=self.history_frames) for logical in self.camera_map
         }
         self._last_frame_ts: Dict[str, float | None] = {logical: None for logical in self.camera_map}
+        self.last_trajectory: np.ndarray | None = None
         self.last_debug: Dict[str, Any] = {}
 
     def reset(self) -> None:
@@ -74,6 +75,7 @@ class AutoVLANativeAgent:
             frames.clear()
         for key in self._last_frame_ts:
             self._last_frame_ts[key] = None
+        self.last_trajectory = None
         self.last_debug = {}
 
     def _update_image_history(self, obs_img: Mapping[str, np.ndarray], timestamp: float) -> None:
@@ -211,14 +213,14 @@ class AutoVLANativeAgent:
         trajectory_np = trajectory.detach().cpu().numpy().astype(np.float32)
         return trajectory_np, action_tokens
 
-    def predict(
+    def predict_action(
         self,
         obs_img: Dict[str, np.ndarray],
         obs_info: Dict[str, Any],
-    ) -> Tuple[np.ndarray, Tuple[float, float], Dict[str, Any]]:
+    ) -> Tuple[float, float]:
         obs_info["ego_velo"] = float(obs_info["ego_velo"])
         obs_info["ego_steer"] = float(obs_info["ego_steer"])
-        timestamp = float(obs_info.get("relative_timestamp", 0.0))
+        timestamp = obs_info["relative_timestamp"]
         self._update_image_history(obs_img, timestamp)
 
         messages = self._build_messages(obs_info)
@@ -250,4 +252,5 @@ class AutoVLANativeAgent:
             "action_tokens": [int(x) for x in action_tokens.detach().cpu().tolist()],
             "traj_front_left": pred_traj.astype(float).tolist(),
         }
-        return pred_traj, action, self.last_debug
+        self.last_trajectory = pred_traj
+        return action

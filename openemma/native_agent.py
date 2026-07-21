@@ -52,10 +52,8 @@ class OpenEMMANativeAgent:
         self._prev_intent: str | None = None
         self._prev_intent_history_seconds: float | None = None
         self._prev_navigation_hint: str | None = None
-        self._prev_navigation_history_seconds: float | None = None
         self._last_action = self.warmup_action
         self.last_trajectory: np.ndarray | None = None
-        self.last_debug: Dict[str, Any] = {}
 
     @property
     def ready(self) -> bool:
@@ -70,10 +68,8 @@ class OpenEMMANativeAgent:
         self._prev_intent = None
         self._prev_intent_history_seconds = None
         self._prev_navigation_hint = None
-        self._prev_navigation_history_seconds = None
         self._last_action = self.warmup_action
         self.last_trajectory = None
-        self.last_debug = {}
 
     def _append_history(self, obs_img: Dict[str, Any], obs_info: Dict[str, Any]) -> bool:
         step_index = self._step_index
@@ -122,17 +118,13 @@ class OpenEMMANativeAgent:
         else:
             raise ValueError(f"Unsupported navigation command: {command}")
 
-    def _intent_description(
-        self, images: Sequence[str], obs_info: Dict[str, Any]
-    ) -> Tuple[str, str, str | None, float | None, str | None, float | None]:
+    def _intent_description(self, images: Sequence[str], navigation_hint: str) -> str:
         history_seconds = self._history_seconds()
         elapsed_seconds = self._elapsed_seconds()
         image_interval = self._image_interval()
-        navigation_hint = self._navigation_hint(obs_info)
         previous_intent = self._prev_intent
         previous_intent_history_seconds = self._prev_intent_history_seconds
         previous_navigation_hint = self._prev_navigation_hint
-        previous_navigation_history_seconds = self._prev_navigation_history_seconds
         if previous_intent is None:
             if self.vlm.backend == "llava":
                 prompt = (
@@ -146,20 +138,7 @@ class OpenEMMANativeAgent:
             else:
                 prompt = f"You are a autonomous driving labeller. You have access to a front-view camera images of a vehicle taken at a {image_interval:.1f} second interval over the past {history_seconds:.1f} seconds. Imagine you are driving the car. Based on the lane markings and the movement of other cars and pedestrians, describe the desired intent of the ego car. The navigation hint is: {navigation_hint}. Should it maintain the current speed or slow down or speed up?"
         else:
-            if previous_intent_history_seconds is None:
-                raise ValueError("previous_intent_history_seconds is missing while previous_intent is set")
             previous_seconds_ago = elapsed_seconds - previous_intent_history_seconds
-            if previous_seconds_ago <= 0.0:
-                raise ValueError(f"previous intent timestamp must be before current timestamp, got {previous_seconds_ago}")
-            if previous_navigation_hint is None:
-                raise ValueError("previous_navigation_hint is missing while previous_intent is set")
-            if previous_navigation_history_seconds is None:
-                raise ValueError("previous_navigation_history_seconds is missing while previous_navigation_hint is set")
-            if previous_navigation_history_seconds != previous_intent_history_seconds:
-                raise ValueError(
-                    "previous navigation timestamp must match previous intent timestamp, "
-                    f"got {previous_navigation_history_seconds} and {previous_intent_history_seconds}"
-                )
             if self.vlm.backend == "llava":
                 prompt = (
                     "You are a autonomous driving labeller. You have access to a front-view camera images of a vehicle "
@@ -173,14 +152,7 @@ class OpenEMMANativeAgent:
             else:
                 prompt = f"You are a autonomous driving labeller. You have access to a front-view camera images of a vehicle taken at a {image_interval:.1f} second interval over the past {history_seconds:.1f} seconds. Imagine you are driving the car. {previous_seconds_ago:.1f} seconds ago your intent was to {previous_intent}. At that time the navigation hint was: {previous_navigation_hint}. The current navigation hint is: {navigation_hint}. Based on the updated lane markings and the updated movement of other cars and pedestrians, do you keep your intent or do you change it? Explain your current intent: "
 
-        return (
-            self._chat(prompt, images),
-            navigation_hint,
-            previous_navigation_hint,
-            previous_navigation_history_seconds,
-            previous_intent,
-            previous_intent_history_seconds,
-        )
+        return self._chat(prompt, images)
 
     def _image_interval(self) -> float:
         return self._history_sample_stride() * self.motion_dt
@@ -224,7 +196,7 @@ class OpenEMMANativeAgent:
         curvatures[-1] = curvatures[-2]
         return speeds, curvatures[sample_indices]
 
-    def _generate_motion(self, obs_info: Dict[str, Any]) -> Tuple[np.ndarray, Dict[str, Any]]:
+    def _generate_motion(self, obs_info: Dict[str, Any]) -> np.ndarray:
         sample_indices = self._history_sample_indices()
         images = [list(self._history)[idx].image_base64 for idx in sample_indices]
         speeds, curvatures = self._history_speed_curvature()
@@ -240,18 +212,11 @@ class OpenEMMANativeAgent:
 
         scene_description = self._scene_description(images)
         object_description = self._object_description(images)
-        (
-            intent_description,
-            navigation_hint,
-            previous_navigation_hint,
-            previous_navigation_history_seconds,
-            previous_intent,
-            previous_intent_history_seconds,
-        ) = self._intent_description(images, obs_info)
+        navigation_hint = self._navigation_hint(obs_info)
+        intent_description = self._intent_description(images, navigation_hint)
         self._prev_intent = intent_description
         self._prev_intent_history_seconds = elapsed_seconds
         self._prev_navigation_hint = navigation_hint
-        self._prev_navigation_history_seconds = elapsed_seconds
 
         sys_message = (
             "You are a autonomous driving labeller. You have access to a front-view camera image of a vehicle, a sequence of past speeds, a sequence of past curvatures, and a driving rationale. Each speed, curvature is represented as [v, k], where v corresponds to the speed, and k corresponds to the curvature. A positive k means the vehicle is turning left. A negative k means the vehicle is turning right. The larger the absolute value of k, the sharper the turn. A close to zero k means the vehicle is driving straight. As a driver on the road, you should follow any common sense traffic rules. You should try to stay in the middle of your lane. You should maintain necessary distance from the leading vehicle. You should observe lane markings and follow them.  Your task is to do your best to predict future speeds and curvatures for the vehicle over the next 10 timesteps given vehicle intent inferred from the image. Make a best guess if the problem is too difficult for you. If you cannot provide a response people will get injured.\n"
@@ -271,55 +236,16 @@ class OpenEMMANativeAgent:
         speed_curvature = raw_speed_curvature.copy()
         speed_curvature[:, 1] = speed_curvature[:, 1] / 100.0
         traj = integrate_speed_curvature(speed_curvature, dt=self.prediction_dt)
-        debug = {
-            "scene_description": scene_description,
-            "object_description": object_description,
-            "intent_description": intent_description,
-            "previous_intent": previous_intent,
-            "previous_intent_history_seconds": previous_intent_history_seconds,
-            "navigation_hint": navigation_hint,
-            "previous_navigation_hint": previous_navigation_hint,
-            "previous_navigation_history_seconds": previous_navigation_history_seconds,
-            "history_size": len(self._history),
-            "sampled_history_size": len(sample_indices),
-            "history_sample_stride": self._history_sample_stride(),
-            "history_sample_indices": sample_indices,
-            "motion_history_size": len(self._motion_xy),
-            "history_speed_curvature": speed_curvature_prompt,
-            "response": response,
-            "raw_speed_curvature": raw_speed_curvature.astype(float).tolist(),
-            "trajectory": traj.astype(float).tolist(),
-        }
-        return traj, debug
-
-    def predict_traj(self, obs_img: Dict[str, Any], obs_info: Dict[str, Any]) -> np.ndarray | None:
-        sample_added = self._append_history(obs_img, obs_info)
-        if not self.ready:
-            self.last_debug = {
-                "ready": False,
-                "history_size": len(self._history),
-                "history_len": self.history_len,
-                "action": list(self.warmup_action),
-            }
-            return None
-        motion_history_size = len(self._motion_xy)
-        motion_bootstrap_update = motion_history_size <= 3 and self.last_debug.get("motion_history_size") != motion_history_size
-        if sample_added or self.last_trajectory is None or motion_bootstrap_update:
-            traj, debug = self._generate_motion(obs_info)
-            self.last_trajectory = traj
-            self.last_debug = {"ready": True, **debug}
-        return self.last_trajectory
-
-    def predict_action_from_traj(self, traj: np.ndarray, obs_info: Dict[str, Any]) -> Tuple[float, float]:
-        horizon = float(traj.shape[0]) * self.prediction_dt
-        acc, steer = traj2control(traj, obs_info, horizon=horizon)
-        return float(steer), float(acc)
+        return traj
 
     def predict_action(self, obs_img: Dict[str, Any], obs_info: Dict[str, Any]) -> Tuple[float, float]:
-        traj = self.predict_traj(obs_img, obs_info)
-        if traj is None:
+        sample_added = self._append_history(obs_img, obs_info)
+        if not self.ready:
             self._last_action = self.warmup_action
             return self._last_action
-        self._last_action = self.predict_action_from_traj(traj, obs_info)
-        self.last_debug["action"] = [float(self._last_action[0]), float(self._last_action[1])]
+        if sample_added or self.last_trajectory is None:
+            self.last_trajectory = self._generate_motion(obs_info)
+        horizon = float(self.last_trajectory.shape[0]) * self.prediction_dt
+        acc, steer = traj2control(self.last_trajectory, obs_info, horizon=horizon)
+        self._last_action = float(steer), float(acc)
         return self._last_action

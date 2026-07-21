@@ -117,7 +117,7 @@ def _as_numeric_array(value) -> np.ndarray | None:
 
 
 def _collect_numeric_inputs(value, prefix: str, out: dict[str, np.ndarray]) -> None:
-    if prefix in {"img", "raw_imgs"}:
+    if prefix == "img":
         return
     if prefix.endswith(".img_shape"):
         return
@@ -374,7 +374,9 @@ def main() -> int:
 
             try:
                 for _ in range(args.max_steps):
-                    pred_traj, action, raw_data = agent.predict(obs_img, obs_info)
+                    action = agent.predict_action(obs_img, obs_info)
+                    pred_traj = agent.last_trajectory
+                    raw_data = agent.last_raw_data
                     raw_input_traces.update(raw_data)
                     vis_obs_img = _overlay_pred_traj_on_front_image(obs_img, obs_info, pred_traj)
                     writer.write(vis_obs_img)

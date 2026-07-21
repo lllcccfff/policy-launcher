@@ -16,17 +16,8 @@ class OpenEMMAHistoryFrame:
     speed: float
 
 
-def latest_camera_rgb(obs_img: Dict[str, Any], camera: str = "FRONT") -> np.ndarray:
-    arr = np.asarray(obs_img[camera])
-    if arr.ndim == 4:
-        arr = arr[-1]
-    if arr.ndim != 3 or arr.shape[2] < 3:
-        raise ValueError(f"{camera} image must have shape HxWx3 or TxHxWx3, got {arr.shape}")
-    return np.ascontiguousarray(arr[:, :, :3].astype(np.uint8))
-
-
 def encode_front_image(obs_img: Dict[str, Any], camera: str = "FRONT", jpeg_quality: int = 90) -> str:
-    rgb = latest_camera_rgb(obs_img, camera=camera)
+    rgb = obs_img[camera]
     bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
     ok, encoded = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), int(jpeg_quality)])
     if not ok:
@@ -40,8 +31,6 @@ def history_frame_from_observation(
     camera: str = "FRONT",
 ) -> OpenEMMAHistoryFrame:
     ego_pos = np.asarray(obs_info["ego_pos"], dtype=np.float32).reshape(-1)
-    if ego_pos.size < 2:
-        raise ValueError(f"ego_pos must contain at least two values, got {ego_pos}")
     return OpenEMMAHistoryFrame(
         image_base64=encode_front_image(obs_img, camera=camera),
         ego_xy=ego_pos[:2].astype(np.float32),
@@ -52,10 +41,6 @@ def history_frame_from_observation(
 
 def estimate_curvature(points_xy: Sequence[Sequence[float]]) -> np.ndarray:
     points = np.asarray(points_xy, dtype=np.float32)
-    if points.ndim != 2 or points.shape[1] < 2:
-        raise ValueError(f"points_xy must have shape Nx2, got {points.shape}")
-    if points.shape[0] < 3:
-        raise ValueError(f"Need at least 3 points to estimate curvature, got {points.shape[0]}")
 
     traj = points[:, :2]
     curvature = np.zeros(traj.shape[0], dtype=np.float32)

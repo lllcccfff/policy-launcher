@@ -253,13 +253,12 @@ def main() -> int:
 
             try:
                 for _ in range(args.max_steps):
-                    raw_data = agent.prepare_raw_input(obs_img, obs_info)
-                    pred_traj = agent.predict_traj_from_raw_data(raw_data)
+                    action = agent.predict_action(obs_img, obs_info)
+                    pred_traj = agent.last_trajectory
                     vis_obs_img = _overlay_pred_traj_on_front_image(obs_img, obs_info, pred_traj)
                     writer.write(vis_obs_img)
                     frame_count += 1
 
-                    action = agent.predict_action_from_traj(pred_traj, obs_info)
                     steering_trace.append(float(action[0]))
                     th_brk_trace.append(float(action[1]))
                     obs, reward, terminated, truncated, step_info = env.step(action)

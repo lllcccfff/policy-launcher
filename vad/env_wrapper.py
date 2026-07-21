@@ -4,8 +4,9 @@ import numpy as np
 import torch
 from gymnasium import spaces
 
+from rl_framework.common.tensor import to_device
 from rl_framework.uniad.env_wrapper import UniADWrapper
-from rl_framework.vad.dataparser import command_to_one_hot, get_vad_img_norm_cfg
+from rl_framework.vad.dataparser import command_to_one_hot
 
 
 class VADWrapper(UniADWrapper):
@@ -159,12 +160,9 @@ class VADWrapper(UniADWrapper):
         obs_img: Dict[str, Any],
         obs_info: Dict[str, Any],
     ) -> Dict[str, Any]:
-        img_norm_cfg = get_vad_img_norm_cfg()
-        cameras = {"FRONT", "FRONT_LEFT", "FRONT_RIGHT", "BACK", "BACK_LEFT", "BACK_RIGHT"}
-
-        raw_data = self.dataparser(obs_img, obs_info, cameras, img_norm_cfg)
+        raw_data = self.dataparser(obs_img, obs_info)
         if isinstance(raw_data, dict):
-            raw_data = self._to_device(raw_data, self.uniad_device)
+            raw_data = to_device(raw_data, self.uniad_device)
         if "raw_imgs" in raw_data:
             del raw_data["raw_imgs"]
 

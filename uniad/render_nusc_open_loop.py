@@ -19,9 +19,8 @@ from pyquaternion import Quaternion
 
 from rl_framework.common.trajectory import lidar_to_ego_front_left
 from rl_framework.run_uniad_grpc_rollout import DEFAULT_UNIAD_CKPT, DEFAULT_UNIAD_CONFIG
-from rl_framework.uniad.dataparser import LIDAR_TO_EGO_4X4
+from rl_framework.uniad.dataparser import LIDAR_TO_EGO_4X4, UNIAD_IMG_NORM_CFG
 from rl_framework.uniad.loader import create_uniad
-from rl_framework.uniad.native_agent import get_uniad_img_norm_cfg
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -190,7 +189,7 @@ def _gt_sdc_traj(nusc: Any, sample: dict[str, Any], steps: int = 6) -> tuple[np.
 
 
 def _prepare_model_input(info: dict[str, Any], command: int, device: torch.device) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
-    img_norm_cfg = get_uniad_img_norm_cfg()
+    img_norm_cfg = UNIAD_IMG_NORM_CFG
     imgs = []
     raw_frames = {}
     lidar2imgs = []

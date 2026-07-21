@@ -256,8 +256,8 @@ def main() -> int:
             steps = 0
             try:
                 for _ in range(args.max_steps):
-                    trajectory, action = agent.predict(obs_img, obs_info)
-                    trajectories.append(trajectory.copy())
+                    action = agent.predict_action(obs_img, obs_info)
+                    trajectories.append(agent.last_trajectory.copy())
                     writer.write(_video_observation(obs_img))
                     steering.append(action[0])
                     throttle_brake.append(action[1])

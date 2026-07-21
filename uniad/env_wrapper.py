@@ -13,6 +13,7 @@ from scipy.spatial.transform import Rotation as SCR
 from typing import Any, Dict, Tuple, Optional, Callable
 import numbers
 from rl_framework.common.grpc_obs_adapter import unpack_ad_observation
+from rl_framework.common.tensor import to_device
 from rl_framework.common.trajectory import lidar_to_ego_front_left, traj2control
 from rl_framework.uniad.dataparser import LIDAR_TO_EGO_4X4
 import colorsys
@@ -279,20 +280,10 @@ class UniADWrapper(gym.Wrapper):
         Returns:
             plan_query and bev_feat
         """
-        img_norm_cfg = {
-        'mean': np.array([103.530, 116.280, 123.675]), 
-        'std': np.array([1.0, 1.0, 1.0]), 
-        'to_rgb': False
-        }
-
-        cameras = {'FRONT', 'FRONT_LEFT', 'FRONT_RIGHT', 'BACK', 'BACK_LEFT', 'BACK_RIGHT'}
-        
-        raw_data = self.dataparser(obs_img, obs_info, cameras, img_norm_cfg)
+        raw_data = self.dataparser(obs_img, obs_info)
 
         if isinstance(raw_data, dict):
-            raw_data = self._to_device(raw_data, self.uniad_device)
-
-        del raw_data['raw_imgs']
+            raw_data = to_device(raw_data, self.uniad_device)
 
         with torch.no_grad():
             model_output = self.uniad_model(return_loss=False, rescale=True, feature_extractor=True, **raw_data)
@@ -317,21 +308,6 @@ class UniADWrapper(gym.Wrapper):
         
         return processed_obs
     
-    def _to_device(
-        self, 
-        data: Any, 
-        device: str
-    ) -> Any:
-
-        if isinstance(data, torch.Tensor):
-            return data.to(device)
-        elif isinstance(data, dict):
-            return {k: self._to_device(v, device) for k, v in data.items()}
-        elif isinstance(data, (list, tuple)):
-            return type(data)(self._to_device(item, device) for item in data)
-        else:
-            return data
-
     def _extract_expert_path_info(self, navigation_obs: Dict[str, Any]):
         path_xy = np.asarray(navigation_obs["waypoint"], dtype=np.float32)[:, :2]
         seg_lengths = np.linalg.norm(path_xy[1:] - path_xy[:-1], axis=1)

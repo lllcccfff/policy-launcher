@@ -275,7 +275,9 @@ def main() -> int:
 
             try:
                 for _ in range(args.max_steps):
-                    pred_traj, action, debug = agent.predict(obs_img, obs_info)
+                    action = agent.predict_action(obs_img, obs_info)
+                    pred_traj = agent.last_trajectory
+                    debug = agent.last_debug
                     steering_trace.append(float(action[0]))
                     th_brk_trace.append(float(action[1]))
 

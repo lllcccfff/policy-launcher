@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Tuple
+from typing import Any, Dict
 
 import cv2
 import numpy as np
 import torch
 from scipy.spatial.transform import Rotation as SCR
 
-from rl_framework.common.trajectory import traj2control
 from rl_framework.epona.loader import EponaBundle
 
 
@@ -20,22 +19,18 @@ class EponaNativeAgent:
         self.device = bundle.device
         self.camera = str(camera)
         self.condition_frames = int(self.args.condition_frames)
-        self.traj_len = int(self.args.traj_len)
-        self.horizon = float(self.traj_len) / float(self.args.downsample_fps)
         self._images: list[np.ndarray] = []
         self._poses: list[np.ndarray] = []
-        self.last_trajectory: np.ndarray | None = None
 
     def reset(self) -> None:
         self._images.clear()
         self._poses.clear()
-        self.last_trajectory = None
 
     def predict_action(
         self,
         obs_img: Dict[str, Any],
         obs_info: Dict[str, Any],
-    ) -> Tuple[float, float]:
+    ) -> np.ndarray:
         self._append_observation(obs_img, obs_info)
         img = self._condition_images_tensor()
         rel_pose, rel_yaw = self._condition_pose_tensors()
@@ -51,9 +46,7 @@ class EponaNativeAgent:
             )
 
         pred_traj = predict_traj[0, :, :2].detach().float().cpu().numpy()
-        acc, steer = traj2control(pred_traj, obs_info, horizon=self.horizon)
-        self.last_trajectory = pred_traj
-        return float(steer), float(acc)
+        return pred_traj
 
     def _append_observation(self, obs_img: Dict[str, Any], obs_info: Dict[str, Any]) -> None:
         self._images.append(obs_img[self.camera])

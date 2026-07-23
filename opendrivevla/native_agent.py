@@ -4,14 +4,14 @@ import copy
 import re
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Deque, Dict, Sequence, Tuple
+from typing import Any, Deque, Dict, Sequence
 
 import numpy as np
 import torch
 from scipy.spatial.transform import Rotation as SCR
 
 from rl_framework.common.tensor import to_device
-from rl_framework.common.trajectory import lidar_to_ego_front_left, traj2control
+from rl_framework.common.trajectory import lidar_to_ego_front_left
 from rl_framework.uniad.dataparser import LIDAR_TO_EGO_4X4, UNIAD_IMG_NORM_CFG, parse_uniad_obs
 
 FIXED_CAMERAS = ("FRONT", "FRONT_RIGHT", "FRONT_LEFT", "BACK", "BACK_LEFT", "BACK_RIGHT")
@@ -61,18 +61,12 @@ class OpenDriveVLANativeAgent:
         self.bf16 = bool(bf16)
         self.model_device = self._infer_model_device()
         self.history: Deque[EgoFrame] = deque(maxlen=128)
-        self.last_answer: str | None = None
-        self.last_trajectory: np.ndarray | None = None
-        self.last_debug: Dict[str, Any] = {}
 
     def _infer_model_device(self) -> torch.device:
         return next(self.model.parameters()).device
 
     def reset(self) -> None:
         self.history.clear()
-        self.last_answer = None
-        self.last_trajectory = None
-        self.last_debug = {}
         vision_tower = self.model.get_vision_tower()
         if vision_tower is None or vision_tower.vision_tower is None:
             raise RuntimeError("OpenDriveVLA model has no loaded UniAD vision tower")
@@ -191,7 +185,7 @@ class OpenDriveVLANativeAgent:
         self,
         obs_img: Dict[str, np.ndarray],
         obs_info: Dict[str, Any],
-    ) -> Tuple[float, float]:
+    ) -> np.ndarray:
         self._append_history(obs_info)
         question = self._build_question(obs_info)
         input_ids = self._build_input_ids(question)
@@ -215,16 +209,4 @@ class OpenDriveVLANativeAgent:
         answer = self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
         traj_lidar_xy = _strict_parse_traj(answer)
         pred_traj = lidar_to_ego_front_left(traj_lidar_xy, LIDAR_TO_EGO_4X4)
-        acc, steer = traj2control(pred_traj, obs_info, horizon=3.0)
-        action = (float(steer), float(acc))
-        self.last_answer = answer
-        self.last_trajectory = pred_traj
-        self.last_debug = {
-            "command": int(obs_info["command"]),
-            "mission_goal": _command_to_goal(int(obs_info["command"])),
-            "question": question,
-            "answer": answer,
-            "traj_lidar_xy": traj_lidar_xy.tolist(),
-            "traj_front_left": pred_traj.tolist(),
-        }
-        return action
+        return pred_traj

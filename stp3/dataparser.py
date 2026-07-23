@@ -9,6 +9,14 @@ import torch
 import torchvision
 from PIL import Image
 
+from rl_framework.common.coordinates import (
+    metadrive_to_carla_steer,
+    metadrive_to_carla_xy,
+    metadrive_to_carla_yaw,
+    pose_matrix_2d,
+    rotation_matrix_2d,
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_STP3_ROOT = REPO_ROOT / "ST-P3"
 
@@ -65,7 +73,15 @@ def camera_parameters(
     intrinsics = []
     for camera in CAMERA_ORDER:
         cam_info = cam_params[camera]
-        extrinsics.append(np.linalg.inv(np.asarray(cam_info["ego2camera"], dtype=np.float32)))
+        # ego2camera maps MetaDrive ego [forward, left, up] to optical [right, down, front].
+        # ST-P3 cam2ego instead uses a camera frame whose x axis points forward.
+        ego2camera = cam_info["ego2camera"]
+        camera_position = np.linalg.inv(ego2camera)[:3, 3]
+        carla_yaw = metadrive_to_carla_yaw(np.arctan2(ego2camera[2, 1], ego2camera[2, 0]))
+        cam2ego = np.eye(4, dtype=np.float32)
+        cam2ego[:2, :2] = rotation_matrix_2d(carla_yaw)
+        cam2ego[:3, 3] = (camera_position[0], -camera_position[1], camera_position[2])
+        extrinsics.append(cam2ego)
 
         height = int(cam_info["H"])
         width = int(cam_info["W"])
@@ -89,22 +105,6 @@ def camera_parameters(
     )
 
 
-def _pose_matrix(x: float, y: float, theta: float) -> np.ndarray:
-    matrix = np.zeros((4, 4), dtype=np.float32)
-    matrix[:2, :2] = np.array(
-        [
-            [np.cos(theta), -np.sin(theta)],
-            [np.sin(theta), np.cos(theta)],
-        ],
-        dtype=np.float32,
-    )
-    matrix[2, 2] = 1.0
-    matrix[0, 3] = float(x)
-    matrix[1, 3] = float(y)
-    matrix[3, 3] = 1.0
-    return matrix
-
-
 def build_future_egomotion(history_states: Sequence[Dict[str, Any]], device: torch.device) -> torch.Tensor:
     if len(history_states) < 2:
         raise ValueError("ST-P3 future egomotion requires at least two history states")
@@ -113,12 +113,12 @@ def build_future_egomotion(history_states: Sequence[Dict[str, Any]], device: tor
     for i in range(len(history_states) - 1):
         state_t0 = history_states[i]
         state_t1 = history_states[i + 1]
-        pos_t0 = np.asarray(state_t0["ego_pos"], dtype=np.float32).reshape(-1)
-        pos_t1 = np.asarray(state_t1["ego_pos"], dtype=np.float32).reshape(-1)
-        theta_t0 = float(state_t0["heading_theta"])
-        theta_t1 = float(state_t1["heading_theta"])
-        egopose_t0 = _pose_matrix(float(pos_t0[0]), float(pos_t0[1]), theta_t0)
-        egopose_t1 = _pose_matrix(float(pos_t1[0]), float(pos_t1[1]), theta_t1)
+        pos_t0 = metadrive_to_carla_xy(state_t0["ego_pos"])
+        pos_t1 = metadrive_to_carla_xy(state_t1["ego_pos"])
+        yaw_t0 = metadrive_to_carla_yaw(state_t0["heading_theta"])
+        yaw_t1 = metadrive_to_carla_yaw(state_t1["heading_theta"])
+        egopose_t0 = pose_matrix_2d(float(pos_t0[0]), float(pos_t0[1]), yaw_t0)
+        egopose_t1 = pose_matrix_2d(float(pos_t1[0]), float(pos_t1[1]), yaw_t1)
         future_egomotion = invert_matrix_egopose_numpy(egopose_t1).dot(egopose_t0)
         future_egomotion[3, :3] = 0.0
         future_egomotion[3, 3] = 1.0
@@ -127,8 +127,8 @@ def build_future_egomotion(history_states: Sequence[Dict[str, Any]], device: tor
     return torch.cat(future_egomotions, dim=0).unsqueeze(0).to(device=device, dtype=torch.float32)
 
 
-def sample_trajectories(cfg: Any, velocity: float, steering: float, device: torch.device) -> torch.Tensor:
-    kappa = 2.0 * float(steering) / 2.588
+def sample_trajectories(cfg: Any, velocity: float, metadrive_steering: float, device: torch.device) -> torch.Tensor:
+    kappa = 2.0 * metadrive_to_carla_steer(metadrive_steering) / 2.588
     tangent = np.array([0.0, 1.0], dtype=np.float32)
     normal = np.array([1.0, 0.0], dtype=np.float32) if kappa <= 0.0 else np.array([-1.0, 0.0], dtype=np.float32)
     t_end = float(cfg.N_FUTURE_FRAMES) * CARLA_SAMPLE_INTERVAL
@@ -151,20 +151,14 @@ def command_string(command: Any) -> str:
 
 
 def target_point_from_waypoint(obs_info: Dict[str, Any], device: torch.device) -> torch.Tensor:
-    target_waypoint = np.asarray(obs_info["target_waypoint"], dtype=np.float32)
-    ego_pos = np.asarray(obs_info["ego_pos"], dtype=np.float32).reshape(-1)
+    target_waypoint = metadrive_to_carla_xy(obs_info["target_waypoint"])
+    ego_pos = metadrive_to_carla_xy(obs_info["ego_pos"])
 
-    delta = target_waypoint[:2] - ego_pos[:2]
-    theta = np.pi / 2.0 + float(obs_info["heading_theta"])
-    rot = np.array(
-        [
-            [np.cos(theta), -np.sin(theta)],
-            [np.sin(theta), np.cos(theta)],
-        ],
-        dtype=np.float32,
-    )
+    delta = target_waypoint - ego_pos
+    theta = np.pi / 2.0 + metadrive_to_carla_yaw(obs_info["heading_theta"])
+    rot = rotation_matrix_2d(theta)
     local = rot.T.dot(delta) * np.array([1.0, -1.0], dtype=np.float32)
-    return torch.from_numpy(local).unsqueeze(0).to(device=device, dtype=torch.float32)
+    return torch.from_numpy(local.astype(np.float32)).unsqueeze(0).to(device=device, dtype=torch.float32)
 
 
 def parse_stp3_obs(

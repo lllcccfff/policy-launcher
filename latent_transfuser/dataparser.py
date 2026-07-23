@@ -6,6 +6,12 @@ import numpy as np
 import torch
 from PIL import Image
 
+from rl_framework.common.coordinates import (
+    metadrive_to_carla_xy,
+    metadrive_to_carla_yaw,
+    rotation_matrix_2d,
+)
+
 
 REQUIRED_CAMERAS = ("FRONT_LEFT", "FRONT", "FRONT_RIGHT")
 
@@ -60,22 +66,15 @@ def _prepare_rgb(obs_img: Dict[str, Any], config: Any) -> torch.Tensor:
 
 
 def _target_point(obs_info: Dict[str, Any]) -> np.ndarray:
-    target_waypoint = np.asarray(obs_info["target_waypoint"], dtype=np.float32)
-    ego_pos = np.asarray(obs_info["ego_pos"], dtype=np.float32).reshape(-1)
-    if ego_pos.size < 2:
-        raise ValueError(f"ego_pos must contain at least xy, got {ego_pos}")
+    target_waypoint = obs_info["target_waypoint"]
+    ego_pos = obs_info["ego_pos"]
 
-    delta = target_waypoint[:2] - ego_pos[:2]
-    yaw = float(obs_info["heading_theta"])
-    rotation = np.asarray(
-        [
-            [np.cos(yaw), -np.sin(yaw)],
-            [np.sin(yaw), np.cos(yaw)],
-        ],
-        dtype=np.float32,
-    )
-    local_point = rotation.T @ delta
-    return -local_point[[1, 0]]
+    target_waypoint_carla = metadrive_to_carla_xy(target_waypoint)
+    ego_pos_carla = metadrive_to_carla_xy(ego_pos)
+    delta = target_waypoint_carla - ego_pos_carla
+    yaw = metadrive_to_carla_yaw(obs_info["heading_theta"])
+    rotation = rotation_matrix_2d(np.pi / 2.0 + yaw)
+    return rotation.T @ delta
 
 
 def _target_point_image(target_point: np.ndarray) -> torch.Tensor:
@@ -98,13 +97,11 @@ def parse_latent_transfuser_obs(
         (1, 2, config.lidar_resolution_width, config.lidar_resolution_height),
         device=device,
     )
-    gt_velocity = torch.FloatTensor([float(obs_info["ego_velo"])]).to(device=device)
-    velocity = gt_velocity.reshape(1, 1)
+    velocity = torch.FloatTensor([float(obs_info["ego_velo"])]).to(device=device)
     return {
         "image": image,
         "lidar_bev": lidar_bev,
         "target_point": target_point,
         "target_point_image": target_point_image,
-        "velocity": velocity,
-        "gt_velocity": gt_velocity,
+        "velocity": velocity.reshape(1, 1),
     }

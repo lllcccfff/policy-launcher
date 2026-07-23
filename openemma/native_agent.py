@@ -6,7 +6,6 @@ from typing import Any, Deque, Dict, Sequence, Tuple
 
 import numpy as np
 
-from rl_framework.common.trajectory import traj2control
 from rl_framework.openemma.backbone import OpenEMMABackendName, OpenEMMAOfficialVLM
 from rl_framework.openemma.dataparser import (
     OpenEMMAHistoryFrame,
@@ -52,7 +51,6 @@ class OpenEMMANativeAgent:
         self._prev_intent: str | None = None
         self._prev_intent_history_seconds: float | None = None
         self._prev_navigation_hint: str | None = None
-        self._last_action = self.warmup_action
         self.last_trajectory: np.ndarray | None = None
 
     @property
@@ -68,7 +66,6 @@ class OpenEMMANativeAgent:
         self._prev_intent = None
         self._prev_intent_history_seconds = None
         self._prev_navigation_hint = None
-        self._last_action = self.warmup_action
         self.last_trajectory = None
 
     def _append_history(self, obs_img: Dict[str, Any], obs_info: Dict[str, Any]) -> bool:
@@ -238,14 +235,11 @@ class OpenEMMANativeAgent:
         traj = integrate_speed_curvature(speed_curvature, dt=self.prediction_dt)
         return traj
 
-    def predict_action(self, obs_img: Dict[str, Any], obs_info: Dict[str, Any]) -> Tuple[float, float]:
+    def predict_action(self, obs_img: Dict[str, Any], obs_info: Dict[str, Any]) -> np.ndarray:
         sample_added = self._append_history(obs_img, obs_info)
         if not self.ready:
-            self._last_action = self.warmup_action
-            return self._last_action
+            self.last_trajectory = np.asarray(self.warmup_action, dtype=np.float32).reshape(1, 2)
+            return self.last_trajectory
         if sample_added or self.last_trajectory is None:
             self.last_trajectory = self._generate_motion(obs_info)
-        horizon = float(self.last_trajectory.shape[0]) * self.prediction_dt
-        acc, steer = traj2control(self.last_trajectory, obs_info, horizon=horizon)
-        self._last_action = float(steer), float(acc)
-        return self._last_action
+        return self.last_trajectory

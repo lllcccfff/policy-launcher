@@ -1,9 +1,7 @@
-from typing import Any
-
 import torch
 
 
-def to_device(data: Any, device: torch.device | str) -> Any:
+def to_device(data, device):
     if isinstance(data, torch.Tensor):
         return data.to(device)
     if isinstance(data, dict):

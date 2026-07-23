@@ -1,5 +1,6 @@
 ﻿import numpy as np
-from rl_framework.ilqr.lqr import plan2control
+
+from rl_framework.common.coordinates import front_right_to_front_left, right_forward_to_front_left
 
 MAX_STEER_RAD = np.deg2rad(40.0)
 WHEELBASE = 2.469
@@ -18,13 +19,6 @@ def smooth_1d(arr, kernel_size=5):
     return smoothed.astype(np.float32)
 
 
-def right_forward_to_front_left(plan_traj):
-    plan_traj = np.asarray(plan_traj, dtype=np.float32)
-    if plan_traj.ndim < 2 or plan_traj.shape[-1] < 2:
-        raise ValueError(f"trajectory must have last dimension >= 2, got {plan_traj.shape}")
-    return np.stack([plan_traj[..., 1], -plan_traj[..., 0]], axis=-1).astype(np.float32)
-
-
 def lidar_to_ego_front_left(plan_traj, lidar_to_ego):
     plan_traj = np.asarray(plan_traj, dtype=np.float32)
     if plan_traj.ndim < 2 or plan_traj.shape[-1] < 2:
@@ -41,15 +35,10 @@ def lidar_to_ego_front_left(plan_traj, lidar_to_ego):
     return ego_points[..., :2].astype(np.float32)
 
 
-def front_right_to_front_left(plan_traj):
-    plan_traj = np.asarray(plan_traj, dtype=np.float32)
-    if plan_traj.ndim < 2 or plan_traj.shape[-1] < 2:
-        raise ValueError(f"trajectory must have last dimension >= 2, got {plan_traj.shape}")
-    return np.stack([plan_traj[..., 0], -plan_traj[..., 1]], axis=-1).astype(np.float32)
-
-
 def traj2control(plan_traj, info, horizon=3.0):
     """Convert (x_front, y_left) relative trajectory to ego-frame control targets."""
+    from rl_framework.ilqr.lqr import plan2control
+
     horizon = float(horizon)
     if horizon <= 0.0:
         raise ValueError(f"trajectory horizon must be positive, got {horizon}")

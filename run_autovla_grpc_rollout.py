@@ -48,27 +48,6 @@ def _is_ordered_scenario_exhausted(exc: BaseException) -> bool:
     return "No more scenarios to evaluate" in message or "No completed scene metrics" in message
 
 
-def _save_action_plot(plot_path: Path, steering: list[float], th_brk: list[float], scene_name: str, terminal_reason: str) -> None:
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    steps = np.arange(len(steering), dtype=np.int32)
-    fig, axes = plt.subplots(2, 1, figsize=(12, 6), sharex=True)
-    axes[0].plot(steps, steering, color="tab:blue", linewidth=1.5)
-    axes[0].set_ylabel("steering")
-    axes[0].grid(True, alpha=0.3)
-    axes[1].plot(steps, th_brk, color="tab:orange", linewidth=1.5)
-    axes[1].set_ylabel("th_brk")
-    axes[1].set_xlabel("step")
-    axes[1].grid(True, alpha=0.3)
-    fig.suptitle(f"{scene_name} | terminal={terminal_reason}")
-    fig.tight_layout()
-    fig.savefig(plot_path, dpi=160, bbox_inches="tight")
-    plt.close(fig)
-
-
 def _debug_state(obs_info: dict) -> dict:
     keys = (
         "ego_pos",
@@ -164,7 +143,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", type=str, default="127.0.0.1", help="gRPC server host")
     parser.add_argument("--port", type=int, default=50052, help="gRPC server port")
     parser.add_argument("--max-steps", type=int, default=1000, help="Max steps per episode")
-    parser.add_argument("--step-size", type=float, default=0.5, help="Environment control step size in seconds")
+    parser.add_argument("--step-size", type=float, default=0.5, help="Environment trajectory update period in seconds")
     parser.add_argument("--timeout", type=float, default=360.0, help="gRPC timeout seconds")
     parser.add_argument("--output-dir", type=str, default=DEFAULT_OUTPUT_DIR, help="Output video directory")
     parser.add_argument("--scene-name", type=str, default=None, help="Run only this scene name")
@@ -270,16 +249,11 @@ def main() -> int:
             terminated = False
             truncated = False
             last_step_info = dict(reset_info)
-            steering_trace: list[float] = []
-            th_brk_trace: list[float] = []
-
             try:
                 for _ in range(args.max_steps):
-                    action = agent.predict_action(obs_img, obs_info)
-                    pred_traj = agent.last_trajectory
+                    trajectory = agent.predict_action(obs_img, obs_info)
+                    pred_traj = trajectory
                     debug = agent.last_debug
-                    steering_trace.append(float(action[0]))
-                    th_brk_trace.append(float(action[1]))
 
                     vis_obs_img = _overlay_pred_traj_on_front_image(obs_img, obs_info, pred_traj)
                     writer.write(vis_obs_img)
@@ -291,7 +265,7 @@ def main() -> int:
                                 {
                                     "scene": scene_name,
                                     "step": steps,
-                                    "action": [float(action[0]), float(action[1])],
+                                    "trajectory": trajectory.tolist(),
                                     "state": _debug_state(obs_info),
                                     "agent": debug,
                                 },
@@ -301,7 +275,7 @@ def main() -> int:
                         )
                         debug_file.flush()
 
-                    obs, reward, terminated, truncated, step_info = env.step(action)
+                    obs, reward, terminated, truncated, step_info = env.step(trajectory)
                     last_step_info = step_info
                     obs_img, obs_info, _, _ = unpack_ad_observation(obs)
                     _sync_runtime_fields(obs_info, step_info)
@@ -316,12 +290,10 @@ def main() -> int:
                 video_path = writer.output_path
 
             terminal_reason = _terminal_reason(last_step_info, terminated, truncated)
-            plot_path = output_dir / f"{safe_scene}__actions.png"
-            _save_action_plot(plot_path, steering_trace, th_brk_trace, scene_name, terminal_reason)
             print(
                 f"[Scene {scene_name}] steps={steps} reward={total_reward:.3f} "
                 f"terminated={terminated} truncated={truncated} reason={terminal_reason} video={video_path} "
-                f"plot={plot_path} codec={writer.codec} frames={frame_count}"
+                f"codec={writer.codec} frames={frame_count}"
             )
             scenes_completed += 1
 

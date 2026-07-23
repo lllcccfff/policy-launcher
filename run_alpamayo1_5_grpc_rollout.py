@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
 import cv2
@@ -53,40 +52,6 @@ def _is_ordered_scenario_exhausted(exc: BaseException) -> bool:
     return "No more scenarios to evaluate" in message or "No completed scene metrics" in message
 
 
-def _save_action_plot(path: Path, steering: list[float], throttle_brake: list[float]) -> None:
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    steps = np.arange(len(steering), dtype=np.int32)
-    figure, axes = plt.subplots(2, 1, figsize=(12, 6), sharex=True)
-    axes[0].plot(steps, steering)
-    axes[0].set_ylabel("steering")
-    axes[0].grid(True, alpha=0.3)
-    axes[1].plot(steps, throttle_brake)
-    axes[1].set_ylabel("th_brk")
-    axes[1].set_xlabel("step")
-    axes[1].grid(True, alpha=0.3)
-    figure.tight_layout()
-    figure.savefig(path, dpi=160, bbox_inches="tight")
-    plt.close(figure)
-
-
-def _save_actions_json(path: Path, steering: list[float], throttle_brake: list[float]) -> None:
-    if len(steering) != len(throttle_brake):
-        raise ValueError(f"Action lengths differ: {len(steering)} steering vs {len(throttle_brake)} throttle/brake")
-    actions = [
-        {
-            "step": step,
-            "steering": float(steer),
-            "throttle_brake": float(th_brk),
-        }
-        for step, (steer, th_brk) in enumerate(zip(steering, throttle_brake))
-    ]
-    path.write_text(json.dumps(actions, indent=2) + "\n", encoding="utf-8")
-
-
 def _validate_camera_contract(obs_img: dict, obs_info: dict) -> None:
     missing_images = [name for name in CAMERA_SOURCES if name not in obs_img]
     if missing_images:
@@ -121,7 +86,7 @@ def _video_observation(obs_img: dict) -> dict[str, np.ndarray]:
     width, height = VIDEO_CELL_SIZE
     return {
         name: cv2.resize(
-            np.asarray(obs_img[name])[-1],
+            obs_img[name],
             (width, height),
             interpolation=cv2.INTER_AREA,
         )
@@ -235,8 +200,6 @@ def main() -> int:
             safe_scene = _safe_name(scene_name)
             camera_layout = ((CAMERA_SOURCES[0], CAMERA_SOURCES[1]), (CAMERA_SOURCES[2], CAMERA_SOURCES[3]))
             writer = EpisodeGridVideoWriter(output_dir / f"{safe_scene}.mp4", args.step_size, camera_layout)
-            steering: list[float] = []
-            throttle_brake: list[float] = []
             trajectories: list[np.ndarray] = []
             total_reward = 0.0
             terminated = False
@@ -245,12 +208,10 @@ def main() -> int:
             steps = 0
             try:
                 for _ in range(args.max_steps):
-                    action = agent.predict_action(obs_img, obs_info)
-                    trajectories.append(agent.last_trajectory.copy())
+                    trajectory = agent.predict_action(obs_img, obs_info)
+                    trajectories.append(trajectory)
                     writer.write(_video_observation(obs_img))
-                    steering.append(action[0])
-                    throttle_brake.append(action[1])
-                    obs, reward, terminated, truncated, step_info = env.step(action)
+                    obs, reward, terminated, truncated, step_info = env.step(trajectory)
                     last_step_info = step_info
                     obs_img, obs_info, _, _ = unpack_ad_observation(obs)
                     _sync_runtime_fields(obs_info, step_info)
@@ -262,16 +223,11 @@ def main() -> int:
                 writer.close()
 
             reason = _terminal_reason(last_step_info, terminated, truncated)
-            action_plot = output_dir / f"{safe_scene}__actions.png"
-            action_json = output_dir / f"{safe_scene}__actions.json"
-            _save_action_plot(action_plot, steering, throttle_brake)
-            _save_actions_json(action_json, steering, throttle_brake)
             trajectory_data, trajectory_plot = _save_trajectory_outputs(output_dir / safe_scene, trajectories)
             print(
                 f"[Scene {scene_name}] steps={steps} reward={total_reward:.3f} "
                 f"terminated={terminated} truncated={truncated} reason={reason} "
-                f"video={writer.output_path} action_plot={action_plot} action_json={action_json} "
-                f"trajectory_data={trajectory_data} trajectory_plot={trajectory_plot}"
+                f"video={writer.output_path} trajectory_data={trajectory_data} trajectory_plot={trajectory_plot}"
             )
             completed_scenes += 1
             if args.scene_name is not None:

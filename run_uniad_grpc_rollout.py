@@ -75,30 +75,6 @@ def _rename_with_terminal_reason(path: Path, terminal_reason: str) -> Path:
     return path.rename(final_path)
 
 
-def _save_action_plot(plot_path: Path, steering: list[float], th_brk: list[float], scene_name: str, terminal_reason: str) -> None:
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    steps = np.arange(len(steering), dtype=np.int32)
-
-    fig, axes = plt.subplots(2, 1, figsize=(12, 6), sharex=True)
-    axes[0].plot(steps, steering, color="tab:blue", linewidth=1.5)
-    axes[0].set_ylabel("steering")
-    axes[0].grid(True, alpha=0.3)
-
-    axes[1].plot(steps, th_brk, color="tab:orange", linewidth=1.5)
-    axes[1].set_ylabel("th_brk")
-    axes[1].set_xlabel("step")
-    axes[1].grid(True, alpha=0.3)
-
-    fig.suptitle(f"{scene_name} | terminal={terminal_reason}")
-    fig.tight_layout()
-    fig.savefig(plot_path, dpi=160, bbox_inches="tight")
-    plt.close(fig)
-
-
 def _as_numeric_array(value) -> np.ndarray | None:
     import torch
 
@@ -288,7 +264,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", type=str, default="127.0.0.1", help="gRPC server host")
     parser.add_argument("--port", type=int, default=50052, help="gRPC server port")
     parser.add_argument("--max-steps", type=int, default=1000, help="Max steps per episode")
-    parser.add_argument("--step-size", type=float, default=0.1, help="Environment control step size in seconds.")
+    parser.add_argument("--step-size", type=float, default=0.5, help="Environment trajectory update period in seconds.")
     parser.add_argument("--timeout", type=float, default=360.0, help="gRPC timeout seconds")
     parser.add_argument("--output-dir", type=str, default="./tmp", help="Output video directory")
     parser.add_argument("--device", type=str, default="cuda", help="UniAD inference device")
@@ -347,7 +323,6 @@ def main() -> int:
                 f"{safe_scene}.avi",
                 f"{safe_scene}__*.mp4",
                 f"{safe_scene}__*.avi",
-                f"{safe_scene}__*__actions.png",
                 f"{safe_scene}__*__raw_inputs",
             ]
             for stale_path in {path for pattern in stale_patterns for path in output_dir.glob(pattern)}:
@@ -368,23 +343,19 @@ def main() -> int:
             terminated = False
             truncated = False
             last_step_info = dict(reset_info)
-            steering_trace: list[float] = []
-            th_brk_trace: list[float] = []
             raw_input_traces = RawInputTraceCollector()
 
             try:
                 for _ in range(args.max_steps):
-                    action = agent.predict_action(obs_img, obs_info)
-                    pred_traj = agent.last_trajectory
+                    trajectory = agent.predict_action(obs_img, obs_info)
+                    pred_traj = trajectory
                     raw_data = agent.last_raw_data
                     raw_input_traces.update(raw_data)
                     vis_obs_img = _overlay_pred_traj_on_front_image(obs_img, obs_info, pred_traj)
                     writer.write(vis_obs_img)
                     frame_count += 1
 
-                    steering_trace.append(float(action[0]))
-                    th_brk_trace.append(float(action[1]))
-                    obs, reward, terminated, truncated, step_info = env.step(action)
+                    obs, reward, terminated, truncated, step_info = env.step(trajectory)
                     last_step_info = step_info
                     obs_img, obs_info, _, _ = unpack_ad_observation(obs)
                     _sync_runtime_fields(obs_info, step_info)
@@ -400,15 +371,13 @@ def main() -> int:
 
             terminal_reason = _terminal_reason(last_step_info, terminated, truncated)
             video_path = _rename_with_terminal_reason(video_path, terminal_reason)
-            plot_path = output_dir / f"{video_path.stem}__actions.png"
             raw_input_plot_dir = output_dir / f"{video_path.stem}__raw_inputs"
-            _save_action_plot(plot_path, steering_trace, th_brk_trace, scene_name, terminal_reason)
             raw_input_plot_count = raw_input_traces.save(raw_input_plot_dir, scene_name, terminal_reason)
 
             print(
                 f"[Scene {scene_name}] steps={steps} reward={total_reward:.3f} "
                 f"terminated={terminated} truncated={truncated} reason={terminal_reason} video={video_path} "
-                f"plot={plot_path} raw_input_plots={raw_input_plot_dir}({raw_input_plot_count}) "
+                f"raw_input_plots={raw_input_plot_dir}({raw_input_plot_count}) "
                 f"codec={writer.codec} frames={frame_count}"
             )
             scenes_completed += 1

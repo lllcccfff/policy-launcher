@@ -44,28 +44,12 @@ def _rename_with_terminal_reason(path: Path, terminal_reason: str) -> Path:
     return final_path
 
 
-def _save_action_plot(plot_path: Path, steering: list[float], th_brk: list[float], scene_name: str, terminal_reason: str) -> None:
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    steps = np.arange(len(steering), dtype=np.int32)
-
-    fig, axes = plt.subplots(2, 1, figsize=(12, 6), sharex=True)
-    axes[0].plot(steps, steering, color="tab:blue", linewidth=1.5)
-    axes[0].set_ylabel("steering")
-    axes[0].grid(True, alpha=0.3)
-
-    axes[1].plot(steps, th_brk, color="tab:orange", linewidth=1.5)
-    axes[1].set_ylabel("th_brk")
-    axes[1].set_xlabel("step")
-    axes[1].grid(True, alpha=0.3)
-
-    fig.suptitle(f"{scene_name} | terminal={terminal_reason}")
-    fig.tight_layout()
-    fig.savefig(plot_path, dpi=160, bbox_inches="tight")
-    plt.close(fig)
+def _target_point_image_to_rgb(target_point_image: np.ndarray) -> np.ndarray:
+    image = np.asarray(target_point_image)
+    if image.ndim != 3 or image.shape[0] != 1:
+        raise ValueError(f"Expected draw_target_point output with shape 1xHxW, got {image.shape}")
+    grayscale = (image[0] * 255.0).astype(np.uint8)
+    return np.repeat(grayscale[:, :, None], 3, axis=2)
 
 
 def parse_args() -> argparse.Namespace:
@@ -80,6 +64,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--transfuser-root", type=str, default=DEFAULT_TRANSFUSER_ROOT, help="TransFuser checkout root")
     parser.add_argument("--model-dir", type=str, default=DEFAULT_LATENT_TF_MODEL_DIR, help="Latent TransFuser checkpoint dir")
     parser.add_argument("--checkpoint-path", type=str, default="", help="Optional single checkpoint path")
+    parser.add_argument(
+        "--route-planner-max-distance",
+        type=float,
+        default=None,
+        help="Override the Latent TransFuser route planner maximum distance",
+    )
+    parser.add_argument(
+        "--render-target-point",
+        action="store_true",
+        help="Render the draw_target_point model input as a video tile",
+    )
     return parser.parse_args()
 
 
@@ -102,13 +97,19 @@ def main() -> int:
     if args.checkpoint_path:
         latent_config["checkpoint_path"] = args.checkpoint_path
     bundle = create_latent_transfuser(latent_config)
-    agent = LatentTransFuserNativeAgent(bundle)
+    if args.route_planner_max_distance is not None:
+        if args.route_planner_max_distance <= 0.0:
+            raise ValueError("--route-planner-max-distance must be > 0")
+        bundle.config.route_planner_max_distance = args.route_planner_max_distance
+    agent = LatentTransFuserNativeAgent(bundle, capture_target_point_image=args.render_target_point)
 
     env = GrpcClientEnv(host=args.host, port=args.port, timeout_sec=args.timeout, auto_wait_ready=True)
     camera_layout = [
         ["FRONT_LEFT", "FRONT", "FRONT_RIGHT"],
         ["BACK_LEFT", "BACK", "BACK_RIGHT"],
     ]
+    if args.render_target_point:
+        camera_layout[1] = ["", "TARGET_POINT", ""]
 
     try:
         first_scene = None
@@ -136,7 +137,6 @@ def main() -> int:
                 f"{safe_scene}.avi",
                 f"{safe_scene}__*.mp4",
                 f"{safe_scene}__*.avi",
-                f"{safe_scene}__*__actions.png",
             ]
             for stale_path in {path for pattern in stale_patterns for path in output_dir.glob(pattern)}:
                 if stale_path.exists():
@@ -153,17 +153,19 @@ def main() -> int:
             terminated = False
             truncated = False
             last_step_info = dict(reset_info)
-            steering_trace: list[float] = []
-            th_brk_trace: list[float] = []
 
             try:
                 for _ in range(args.max_steps):
-                    writer.write(obs_img)
+                    action = agent.predict_action(obs_img, obs_info)
+                    video_obs_img = obs_img
+                    if args.render_target_point:
+                        if agent.last_target_point_image is None:
+                            raise RuntimeError("Latent TransFuser did not produce a target-point image")
+                        video_obs_img = dict(obs_img)
+                        video_obs_img["TARGET_POINT"] = _target_point_image_to_rgb(agent.last_target_point_image)
+                    writer.write(video_obs_img)
                     frame_count += 1
 
-                    action = agent.predict_action(obs_img, obs_info)
-                    steering_trace.append(float(action[0]))
-                    th_brk_trace.append(float(action[1]))
                     obs, reward, terminated, truncated, step_info = env.step(action)
                     last_step_info = step_info
                     obs_img, obs_info, _, _ = unpack_ad_observation(obs)
@@ -180,13 +182,10 @@ def main() -> int:
 
             terminal_reason = _terminal_reason(last_step_info, terminated, truncated)
             video_path = _rename_with_terminal_reason(video_path, terminal_reason)
-            plot_path = output_dir / f"{video_path.stem}__actions.png"
-            _save_action_plot(plot_path, steering_trace, th_brk_trace, scene_name, terminal_reason)
 
             print(
                 f"[Scene {scene_name}] steps={steps} reward={total_reward:.3f} "
                 f"terminated={terminated} truncated={truncated} reason={terminal_reason} video={video_path} "
-                f"plot={plot_path} "
                 f"codec={writer.codec} frames={frame_count}"
             )
             scenes_completed += 1

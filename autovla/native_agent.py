@@ -9,7 +9,6 @@ from PIL import Image
 from qwen_vl_utils import process_vision_info
 
 from rl_framework.autovla.loader import AutoVLABundle
-from rl_framework.common.trajectory import traj2control
 
 CAMERA_MAP = {
     "front_camera": "FRONT",
@@ -53,7 +52,6 @@ class AutoVLANativeAgent:
             raise ValueError(f"history_frames must be positive, got {history_frames}")
         self.frame_interval = float(frame_interval)
         self.video_conf = dict(bundle.config["model"]["video"])
-        self.trajectory_conf = dict(bundle.config["model"]["trajectory"])
         self.gen_conf = dict(bundle.config["inference"]["sample"])
         if temperature is not None:
             self.gen_conf["temperature"] = float(temperature)
@@ -67,7 +65,6 @@ class AutoVLANativeAgent:
             logical: deque(maxlen=self.history_frames) for logical in self.camera_map
         }
         self._last_frame_ts: Dict[str, float | None] = {logical: None for logical in self.camera_map}
-        self.last_trajectory: np.ndarray | None = None
         self.last_debug: Dict[str, Any] = {}
 
     def reset(self) -> None:
@@ -75,14 +72,13 @@ class AutoVLANativeAgent:
             frames.clear()
         for key in self._last_frame_ts:
             self._last_frame_ts[key] = None
-        self.last_trajectory = None
         self.last_debug = {}
 
     def _update_image_history(self, obs_img: Mapping[str, np.ndarray], timestamp: float) -> None:
         for logical_name, env_name in self.camera_map.items():
             if env_name not in obs_img:
                 raise KeyError(f"AutoVLA requires camera {env_name!r}; got {sorted(obs_img)}")
-            frame = np.ascontiguousarray(obs_img[env_name][0])
+            frame = obs_img[env_name]
             frames = self._frames[logical_name]
             last_ts = self._last_frame_ts[logical_name]
             should_append = (
@@ -217,7 +213,7 @@ class AutoVLANativeAgent:
         self,
         obs_img: Dict[str, np.ndarray],
         obs_info: Dict[str, Any],
-    ) -> Tuple[float, float]:
+    ) -> np.ndarray:
         obs_info["ego_velo"] = float(obs_info["ego_velo"])
         obs_info["ego_steer"] = float(obs_info["ego_steer"])
         timestamp = obs_info["relative_timestamp"]
@@ -242,9 +238,6 @@ class AutoVLANativeAgent:
 
         pred_traj, action_tokens = self._decode_generated_trajectory(generated_ids)
 
-        horizon = float(self.trajectory_conf["interval_length"]) * max(len(pred_traj), 1)
-        acc, steer = traj2control(pred_traj, obs_info, horizon=horizon)
-        action = (float(steer), float(acc))
         self.last_debug = {
             "command": int(obs_info["command"]),
             "instruction": _command_to_instruction(int(obs_info["command"])),
@@ -252,5 +245,4 @@ class AutoVLANativeAgent:
             "action_tokens": [int(x) for x in action_tokens.detach().cpu().tolist()],
             "traj_front_left": pred_traj.astype(float).tolist(),
         }
-        self.last_trajectory = pred_traj
-        return action
+        return pred_traj

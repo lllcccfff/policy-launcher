@@ -2,19 +2,17 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Deque, Dict, Sequence, Tuple
+from typing import Any, Deque, Dict, Sequence
 
 import numpy as np
 import torch
 from scipy.spatial.transform import Rotation as SCR
 
 from rl_framework.alpamayo1_5.loader import Alpamayo15Bundle
-from rl_framework.common.trajectory import traj2control
 
 
 HISTORY_STEPS = 16
 IMAGE_HISTORY_STEPS = 4
-PREDICTION_HORIZON_S = 6.4
 DEFAULT_CAMERA_SOURCES = (
     "camera_cross_left_120fov",
     "camera_front_wide_120fov",
@@ -65,18 +63,16 @@ class Alpamayo15NativeAgent:
         self.max_generation_length = int(max_generation_length)
         self._image_history: Deque[Dict[str, np.ndarray]] = deque(maxlen=HISTORY_STEPS)
         self._ego_history: Deque[EgoFrame] = deque(maxlen=HISTORY_STEPS)
-        self.last_trajectory: np.ndarray | None = None
 
     def reset(self) -> None:
         self._image_history.clear()
         self._ego_history.clear()
-        self.last_trajectory = None
 
     def predict_action(
         self,
         obs_img: Dict[str, Any],
         obs_info: Dict[str, Any],
-    ) -> Tuple[float, float]:
+    ) -> np.ndarray:
         self._append_observation(obs_img, obs_info)
         image_frames = self._image_frames_tensor()
         ego_history_xyz, ego_history_rot = self._ego_history_tensors()
@@ -116,9 +112,7 @@ class Alpamayo15NativeAgent:
         trajectory = pred_xyz[0, 0, 0].detach().float().cpu().numpy().astype(np.float32)
         if trajectory.shape != (64, 3):
             raise ValueError(f"Alpamayo 1.5 must predict a 64x3 trajectory, got {trajectory.shape}")
-        acc, steer = traj2control(trajectory[:, :2], obs_info, horizon=PREDICTION_HORIZON_S)
-        self.last_trajectory = trajectory
-        return float(steer), float(acc)
+        return trajectory[:, :2]
 
     def _append_observation(self, obs_img: Dict[str, Any], obs_info: Dict[str, Any]) -> None:
         frames = {name: obs_img[name] for name in self.camera_sources}

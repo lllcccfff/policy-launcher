@@ -16,13 +16,17 @@ def _to_numpy(value: Any) -> np.ndarray:
 
 
 class UniADNativeAgent:
-    def __init__(
-        self,
-        uniad_model: torch.nn.Module,
-    ):
-        self.uniad_model = uniad_model
+    def __init__(self, device: str):
+        from rl_framework.uniad.loader import create_uniad
+
+        config = {
+            "config_path": "UniAD_SIM/projects/configs/stage2_e2e/base_e2e.py",
+            "checkpoint_path": "UniAD_SIM/ckpts/uniad_base_e2e.pth",
+            "AD_root": "./UniAD_SIM",
+            "device": device,
+        }
+        self.uniad_model = create_uniad(config)
         self.model_device = self._infer_model_device()
-        self.last_raw_data: Dict[str, Any] | None = None
 
     def _infer_model_device(self) -> torch.device:
         model_impl = self.uniad_model.module if hasattr(self.uniad_model, "module") else self.uniad_model
@@ -46,5 +50,4 @@ class UniADNativeAgent:
 
         traj = _to_numpy(results[0]["planning"]["result_planning"]["sdc_traj"]).astype(np.float32)[0]
         pred_traj = lidar_to_ego_front_left(traj, LIDAR_TO_EGO_4X4)
-        self.last_raw_data = raw_data
         return pred_traj

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict
 
 import cv2
@@ -7,30 +8,50 @@ import numpy as np
 import torch
 from scipy.spatial.transform import Rotation as SCR
 
-from rl_framework.epona.loader import EponaBundle
-
-
 class EponaNativeAgent:
-    def __init__(self, bundle: EponaBundle, camera: str = "FRONT"):
+    def __init__(self, device: str):
+        from rl_framework.epona.loader import create_epona
+
+        repo_root = Path(__file__).resolve().parents[2]
+        bundle = create_epona(
+            {
+                "epona_root": str(repo_root / "Epona"),
+                "config_path": str(repo_root / "Epona" / "configs" / "dit_config_dcae_nuscenes.py"),
+                "checkpoint_path": str(repo_root / "Epona" / "pretrained" / "epona_nuplan+nusc.pkl"),
+                "vae_checkpoint_path": str(repo_root / "Epona" / "pretrained" / "dcae_td_20000.pkl"),
+                "device": device,
+                "batch_size": 1,
+            }
+        )
         self.bundle = bundle
         self.model = bundle.model
         self.tokenizer = bundle.tokenizer
         self.args = bundle.args
         self.device = bundle.device
-        self.camera = str(camera)
+        self.camera = "FRONT"
         self.condition_frames = int(self.args.condition_frames)
         self._images: list[np.ndarray] = []
         self._poses: list[np.ndarray] = []
+        self._scene_token: str | None = None
 
     def reset(self) -> None:
         self._images.clear()
         self._poses.clear()
+        self._scene_token = None
+        torch.manual_seed(0)
+        torch.cuda.manual_seed_all(0)
+
+    def _reset_for_scene(self, scene_token: str) -> None:
+        if scene_token != self._scene_token:
+            self.reset()
+            self._scene_token = scene_token
 
     def predict_action(
         self,
         obs_img: Dict[str, Any],
         obs_info: Dict[str, Any],
     ) -> np.ndarray:
+        self._reset_for_scene(str(obs_info["scene_token"]))
         self._append_observation(obs_img, obs_info)
         img = self._condition_images_tensor()
         rel_pose, rel_yaw = self._condition_pose_tensors()

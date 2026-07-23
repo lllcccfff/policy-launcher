@@ -4,6 +4,7 @@ import copy
 import re
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Deque, Dict, Sequence
 
 import numpy as np
@@ -14,7 +15,6 @@ from rl_framework.common.tensor import to_device
 from rl_framework.common.trajectory import lidar_to_ego_front_left
 from rl_framework.uniad.dataparser import LIDAR_TO_EGO_4X4, UNIAD_IMG_NORM_CFG, parse_uniad_obs
 
-FIXED_CAMERAS = ("FRONT", "FRONT_RIGHT", "FRONT_LEFT", "BACK", "BACK_LEFT", "BACK_RIGHT")
 HISTORY_POINTS = 4
 HISTORY_INTERVAL_S = 0.5
 
@@ -48,25 +48,37 @@ def _strict_parse_traj(answer: str) -> np.ndarray:
 class OpenDriveVLANativeAgent:
     def __init__(
         self,
-        tokenizer: Any,
-        model: torch.nn.Module,
-        cameras: Sequence[str] = FIXED_CAMERAS,
+        device: str,
+        opendrivevla_root: str | None = None,
+        checkpoint: str = "checkpoints/DriveVLA-Qwen2.5-0.5B-Instruct",
+        attn_implementation: str = "flash_attention_2",
         max_new_tokens: int = 512,
         bf16: bool = False,
     ):
-        self.tokenizer = tokenizer
-        self.model = model
-        self.cameras = tuple(cameras)
+        from rl_framework.opendrivevla.loader import create_opendrivevla
+
+        repo_root = Path(__file__).resolve().parents[2]
+        root = opendrivevla_root or str(repo_root / "OpenDriveVLA")
+        self.tokenizer, self.model, _ = create_opendrivevla(
+            {
+                "opendrivevla_root": root,
+                "checkpoint_path": checkpoint,
+                "device": device,
+                "attn_implementation": attn_implementation,
+            }
+        )
         self.max_new_tokens = int(max_new_tokens)
         self.bf16 = bool(bf16)
         self.model_device = self._infer_model_device()
         self.history: Deque[EgoFrame] = deque(maxlen=128)
+        self._scene_token: str | None = None
 
     def _infer_model_device(self) -> torch.device:
         return next(self.model.parameters()).device
 
     def reset(self) -> None:
         self.history.clear()
+        self._scene_token = None
         vision_tower = self.model.get_vision_tower()
         if vision_tower is None or vision_tower.vision_tower is None:
             raise RuntimeError("OpenDriveVLA model has no loaded UniAD vision tower")
@@ -75,6 +87,11 @@ class OpenDriveVLANativeAgent:
         vision_model.prev_frame_info["scene_token"] = None
         vision_model.prev_frame_info["prev_pos"] = 0
         vision_model.prev_frame_info["prev_angle"] = 0
+
+    def _reset_for_scene(self, scene_token: str) -> None:
+        if scene_token != self._scene_token:
+            self.reset()
+            self._scene_token = scene_token
 
     def _append_history(self, obs_info: Dict[str, Any]) -> None:
         self.history.append(
@@ -186,6 +203,7 @@ class OpenDriveVLANativeAgent:
         obs_img: Dict[str, np.ndarray],
         obs_info: Dict[str, Any],
     ) -> np.ndarray:
+        self._reset_for_scene(str(obs_info["scene_token"]))
         self._append_history(obs_info)
         question = self._build_question(obs_info)
         input_ids = self._build_input_ids(question)

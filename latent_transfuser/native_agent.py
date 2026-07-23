@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, Tuple
 
 import numpy as np
@@ -7,11 +8,20 @@ import torch
 
 from rl_framework.common.coordinates import front_right_to_front_left
 from rl_framework.latent_transfuser.dataparser import parse_latent_transfuser_obs
-from rl_framework.latent_transfuser.loader import LatentTransFuserBundle
 
 
 class LatentTransFuserNativeAgent:
-    def __init__(self, bundle: LatentTransFuserBundle, capture_target_point_image: bool = False):
+    def __init__(self, device: str):
+        from rl_framework.latent_transfuser.loader import create_latent_transfuser
+
+        repo_root = Path(__file__).resolve().parents[2]
+        bundle = create_latent_transfuser(
+            {
+                "transfuser_root": str(repo_root / "TransFuser"),
+                "model_dir": str(repo_root / "TransFuser" / "model_ckpt" / "models_2022" / "latentTF"),
+                "device": device,
+            }
+        )
         if not bundle.nets:
             raise ValueError("Latent TransFuser bundle must contain at least one network")
         self.bundle = bundle
@@ -21,19 +31,31 @@ class LatentTransFuserNativeAgent:
         self.stuck_detector = 0
         self.forced_move = 0
         self.steer_damping = self.config.steer_damping
-        self.capture_target_point_image = capture_target_point_image
-        self.last_target_point_image: np.ndarray | None = None
+        self._scene_token: str | None = None
+
+    def reset(self) -> None:
+        self.stuck_detector = 0
+        self.forced_move = 0
+        self._scene_token = None
+        for net in self.nets:
+            for controller_name in ("turn_controller", "speed_controller"):
+                controller = getattr(net, controller_name)
+                controller._window.clear()
+                controller._window.extend([0] * controller._window.maxlen)
+
+    def _reset_for_scene(self, scene_token: str) -> None:
+        if scene_token != self._scene_token:
+            self.reset()
+            self._scene_token = scene_token
 
     def predict_action(self, obs_img: Dict[str, Any], obs_info: Dict[str, Any]) -> Tuple[float, float]:
+        self._reset_for_scene(str(obs_info["scene_token"]))
         raw_data = parse_latent_transfuser_obs(
             obs_img,
             obs_info,
             self.config,
             self.device,
         )
-        if self.capture_target_point_image:
-            self.last_target_point_image = raw_data["target_point_image"][0].detach().cpu().numpy()
-
         is_stuck = False
         if self.stuck_detector > self.config.stuck_threshold and self.forced_move < self.config.creep_duration:
             is_stuck = True

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from pathlib import Path
 from typing import Any, Deque, Dict, Optional
 
 import numpy as np
@@ -13,18 +14,25 @@ MAX_STEER_RAD = np.deg2rad(40.0)
 
 
 class STP3NativeAgent:
-    def __init__(
-        self,
-        stp3_model: torch.nn.Module,
-    ):
-        self.model = stp3_model
-        self.cfg = stp3_model.cfg
+    def __init__(self, device: str):
+        from rl_framework.stp3.loader import create_stp3
+
+        repo_root = Path(__file__).resolve().parents[2]
+        self.model = create_stp3(
+            {
+                "stp3_root": str(repo_root / "ST-P3"),
+                "checkpoint_path": str(repo_root / "ST-P3" / "ckpts" / "stp3_carla.ckpt"),
+                "device": device,
+            }
+        )
+        self.cfg = self.model.cfg
         self.device = self._infer_model_device()
         self.receptive_field = int(self.cfg.TIME_RECEPTIVE_FIELD)
 
         self._image_history: Deque[Dict[str, Any]] = deque(maxlen=self.receptive_field)
         self._state_history: Deque[Dict[str, Any]] = deque(maxlen=self.receptive_field)
         self._frames_seen = 0
+        self._scene_token: str | None = None
 
     def _infer_model_device(self) -> torch.device:
         try:
@@ -36,8 +44,15 @@ class STP3NativeAgent:
         self._image_history.clear()
         self._state_history.clear()
         self._frames_seen = 0
+        self._scene_token = None
+
+    def _reset_for_scene(self, scene_token: str) -> None:
+        if scene_token != self._scene_token:
+            self.reset()
+            self._scene_token = scene_token
 
     def predict_action(self, obs_img: Dict[str, Any], obs_info: Dict[str, Any]) -> Optional[np.ndarray]:
+        self._reset_for_scene(str(obs_info["scene_token"]))
         self._image_history.append(dict(obs_img))
         self._frames_seen += 1
         self._state_history.append(

@@ -123,7 +123,6 @@ def create_vad(vad_config: Dict[str, Any]):
     finally:
         os.chdir(original_cwd)
 
-
 def extract_vad_planning_weights(model) -> Dict[str, Any]:
     model_impl = model.module if hasattr(model, "module") else model
     runtime_mode = getattr(model_impl, "runtime_mode", getattr(model, "runtime_mode", "feature_rl"))

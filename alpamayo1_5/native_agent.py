@@ -2,14 +2,12 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Deque, Dict, Sequence
+from pathlib import Path
+from typing import Any, Deque, Dict
 
 import numpy as np
 import torch
 from scipy.spatial.transform import Rotation as SCR
-
-from rl_framework.alpamayo1_5.loader import Alpamayo15Bundle
-
 
 HISTORY_STEPS = 16
 IMAGE_HISTORY_STEPS = 4
@@ -28,51 +26,47 @@ class EgoFrame:
     rotation: np.ndarray
 
 
-def _vec3(value: Any, name: str) -> np.ndarray:
-    array = np.asarray(value, dtype=np.float32).reshape(-1)
-    if array.size != 3:
-        raise ValueError(f"{name} must contain 3 values, got shape {np.asarray(value).shape}")
-    return array
-
-
 class Alpamayo15NativeAgent:
-    def __init__(
-        self,
-        bundle: Alpamayo15Bundle,
-        camera_sources: Sequence[str] = DEFAULT_CAMERA_SOURCES,
-        top_p: float = 0.98,
-        temperature: float = 0.6,
-        max_generation_length: int = 256,
-    ) -> None:
-        camera_sources = tuple(str(name) for name in camera_sources)
-        if len(camera_sources) != 4:
-            raise ValueError(f"Alpamayo 1.5 requires exactly 4 camera sources, got {camera_sources}")
-        if len(set(camera_sources)) != 4:
-            raise ValueError(f"Alpamayo 1.5 requires 4 unique camera sources, got {camera_sources}")
-        if camera_sources != DEFAULT_CAMERA_SOURCES:
-            raise ValueError(
-                "Alpamayo 1.5 requires canonical PhysicalAI camera order "
-                f"{DEFAULT_CAMERA_SOURCES}, got {camera_sources}"
-            )
+    def __init__(self, device: str) -> None:
+        from rl_framework.alpamayo1_5.loader import create_alpamayo1_5
+
+        repo_root = Path(__file__).resolve().parents[2]
+        bundle = create_alpamayo1_5(
+            {
+                "alpamayo_root": str(repo_root / "alpamayo1.5"),
+                "model_path": str(repo_root / "alpamayo1.5" / "model"),
+                "device": device,
+            }
+        )
         self.model = bundle.model
         self.processor = bundle.processor
         self.device = bundle.device
-        self.camera_sources = camera_sources
-        self.top_p = float(top_p)
-        self.temperature = float(temperature)
-        self.max_generation_length = int(max_generation_length)
+        self.camera_sources = DEFAULT_CAMERA_SOURCES
+        self.top_p = 0.98
+        self.temperature = 0.6
+        self.max_generation_length = 256
         self._image_history: Deque[Dict[str, np.ndarray]] = deque(maxlen=HISTORY_STEPS)
         self._ego_history: Deque[EgoFrame] = deque(maxlen=HISTORY_STEPS)
+        self._scene_token: str | None = None
 
     def reset(self) -> None:
         self._image_history.clear()
         self._ego_history.clear()
+        self._scene_token = None
+        torch.manual_seed(0)
+        torch.cuda.manual_seed_all(0)
+
+    def _reset_for_scene(self, scene_token: str) -> None:
+        if scene_token != self._scene_token:
+            self.reset()
+            self._scene_token = scene_token
 
     def predict_action(
         self,
         obs_img: Dict[str, Any],
         obs_info: Dict[str, Any],
     ) -> np.ndarray:
+        self._reset_for_scene(str(obs_info["scene_token"]))
         self._append_observation(obs_img, obs_info)
         image_frames = self._image_frames_tensor()
         ego_history_xyz, ego_history_rot = self._ego_history_tensors()
@@ -116,9 +110,8 @@ class Alpamayo15NativeAgent:
 
     def _append_observation(self, obs_img: Dict[str, Any], obs_info: Dict[str, Any]) -> None:
         frames = {name: obs_img[name] for name in self.camera_sources}
-        position = _vec3(obs_info["ego_pos"], "ego_pos")
-        euler_xyz = _vec3(obs_info["ego_rot"], "ego_rot")
-        rotation = SCR.from_euler("XYZ", euler_xyz, degrees=False).as_matrix().astype(np.float32)
+        position = obs_info["ego_pos"]
+        rotation = SCR.from_euler("XYZ", obs_info["ego_rot"], degrees=False).as_matrix().astype(np.float32)
         if not self._ego_history:
             first_frame = EgoFrame(position=position, rotation=rotation)
             for _ in range(HISTORY_STEPS):

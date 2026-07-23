@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 from collections import deque
-from typing import Any, Deque, Dict, Mapping, Sequence, Tuple
+from pathlib import Path
+from typing import Any, Deque, Dict, Mapping, Sequence
 
 import numpy as np
 import torch
 from PIL import Image
 from qwen_vl_utils import process_vision_info
-
-from rl_framework.autovla.loader import AutoVLABundle
 
 CAMERA_MAP = {
     "front_camera": "FRONT",
@@ -32,47 +31,43 @@ def _command_to_instruction(command: int) -> str:
 
 
 class AutoVLANativeAgent:
-    def __init__(
-        self,
-        bundle: AutoVLABundle,
-        history_frames: int = 4,
-        frame_interval: float = 0.5,
-        camera_map: Mapping[str, str] | None = None,
-        temperature: float | None = None,
-        top_k: int | None = None,
-        top_p: float | None = None,
-        max_length: int | None = None,
-    ):
+    def __init__(self, device: str):
+        from rl_framework.autovla.loader import create_autovla
+
+        repo_root = Path(__file__).resolve().parents[2]
+        bundle = create_autovla(
+            {
+                "autovla_root": str(repo_root / "AutoVLA"),
+                "config_path": str(repo_root / "AutoVLA" / "config" / "eval" / "qwen2.5-vl-3B-nusc-sft-eval.yaml"),
+                "checkpoint_path": str(repo_root / "AutoVLA" / "checkpoints" / "AutoVLA" / "AutoVLA_PDMS_89.ckpt"),
+                "device": device,
+            }
+        )
         self.bundle = bundle
         self.model = bundle.model
         self.processor = bundle.model.processor
-        self.camera_map = dict(CAMERA_MAP if camera_map is None else camera_map)
-        self.history_frames = int(history_frames)
-        if self.history_frames <= 0:
-            raise ValueError(f"history_frames must be positive, got {history_frames}")
-        self.frame_interval = float(frame_interval)
+        self.camera_map = dict(CAMERA_MAP)
+        self.history_frames = 4
+        self.frame_interval = 0.5
         self.video_conf = dict(bundle.config["model"]["video"])
         self.gen_conf = dict(bundle.config["inference"]["sample"])
-        if temperature is not None:
-            self.gen_conf["temperature"] = float(temperature)
-        if top_k is not None:
-            self.gen_conf["top_k"] = int(top_k)
-        if top_p is not None:
-            self.gen_conf["top_p"] = float(top_p)
-        if max_length is not None:
-            self.gen_conf["max_length"] = int(max_length)
         self._frames: Dict[str, Deque[np.ndarray]] = {
             logical: deque(maxlen=self.history_frames) for logical in self.camera_map
         }
         self._last_frame_ts: Dict[str, float | None] = {logical: None for logical in self.camera_map}
-        self.last_debug: Dict[str, Any] = {}
+        self._scene_token: str | None = None
 
     def reset(self) -> None:
         for frames in self._frames.values():
             frames.clear()
         for key in self._last_frame_ts:
             self._last_frame_ts[key] = None
-        self.last_debug = {}
+        self._scene_token = None
+
+    def _reset_for_scene(self, scene_token: str) -> None:
+        if scene_token != self._scene_token:
+            self.reset()
+            self._scene_token = scene_token
 
     def _update_image_history(self, obs_img: Mapping[str, np.ndarray], timestamp: float) -> None:
         for logical_name, env_name in self.camera_map.items():
@@ -202,18 +197,18 @@ class AutoVLANativeAgent:
         )
         return {k: v.to(self.bundle.device) for k, v in inputs.items() if isinstance(v, torch.Tensor)}
 
-    def _decode_generated_trajectory(self, generated_ids: torch.Tensor) -> Tuple[np.ndarray, torch.Tensor]:
+    def _decode_generated_trajectory(self, generated_ids: torch.Tensor) -> np.ndarray:
         outputs_trimmed = generated_ids[:-1].detach().cpu()
         action_tokens = outputs_trimmed[outputs_trimmed >= int(self.model.action_start_id)]
         trajectory = self.model.action_tokenizer.decode_token_ids_to_trajectory(action_tokens)[0, 1:, :2]
-        trajectory_np = trajectory.detach().cpu().numpy().astype(np.float32)
-        return trajectory_np, action_tokens
+        return trajectory.detach().cpu().numpy().astype(np.float32)
 
     def predict_action(
         self,
         obs_img: Dict[str, np.ndarray],
         obs_info: Dict[str, Any],
     ) -> np.ndarray:
+        self._reset_for_scene(str(obs_info["scene_token"]))
         obs_info["ego_velo"] = float(obs_info["ego_velo"])
         obs_info["ego_steer"] = float(obs_info["ego_steer"])
         timestamp = obs_info["relative_timestamp"]
@@ -234,15 +229,4 @@ class AutoVLANativeAgent:
             outputs = self.model.vlm.generate(**model_inputs, **generation_kwargs)
         input_len = int(model_inputs["input_ids"].shape[1])
         generated_ids = outputs[0, input_len:]
-        output_text = self.processor.decode(generated_ids.detach().cpu(), skip_special_tokens=False)
-
-        pred_traj, action_tokens = self._decode_generated_trajectory(generated_ids)
-
-        self.last_debug = {
-            "command": int(obs_info["command"]),
-            "instruction": _command_to_instruction(int(obs_info["command"])),
-            "output_text": output_text,
-            "action_tokens": [int(x) for x in action_tokens.detach().cpu().tolist()],
-            "traj_front_left": pred_traj.astype(float).tolist(),
-        }
-        return pred_traj
+        return self._decode_generated_trajectory(generated_ids)

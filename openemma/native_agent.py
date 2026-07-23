@@ -52,6 +52,7 @@ class OpenEMMANativeAgent:
         self._prev_intent_history_seconds: float | None = None
         self._prev_navigation_hint: str | None = None
         self.last_trajectory: np.ndarray | None = None
+        self._scene_token: str | None = None
 
     @property
     def ready(self) -> bool:
@@ -67,6 +68,12 @@ class OpenEMMANativeAgent:
         self._prev_intent_history_seconds = None
         self._prev_navigation_hint = None
         self.last_trajectory = None
+        self._scene_token = None
+
+    def _reset_for_scene(self, scene_token: str) -> None:
+        if scene_token != self._scene_token:
+            self.reset()
+            self._scene_token = scene_token
 
     def _append_history(self, obs_img: Dict[str, Any], obs_info: Dict[str, Any]) -> bool:
         step_index = self._step_index
@@ -236,6 +243,7 @@ class OpenEMMANativeAgent:
         return traj
 
     def predict_action(self, obs_img: Dict[str, Any], obs_info: Dict[str, Any]) -> np.ndarray:
+        self._reset_for_scene(str(obs_info["scene_token"]))
         sample_added = self._append_history(obs_img, obs_info)
         if not self.ready:
             self.last_trajectory = np.asarray(self.warmup_action, dtype=np.float32).reshape(1, 2)
@@ -243,3 +251,47 @@ class OpenEMMANativeAgent:
         if sample_added or self.last_trajectory is None:
             self.last_trajectory = self._generate_motion(obs_info)
         return self.last_trajectory
+
+
+class OpenEMMANativeAgentGPT(OpenEMMANativeAgent):
+    def __init__(self):
+        super().__init__(
+            model="gpt",
+            history_len=10,
+            history_stride=5,
+            motion_dt=0.5,
+            prediction_dt=0.5,
+        )
+
+
+class OpenEMMANativeAgentQwen(OpenEMMANativeAgent):
+    def __init__(self):
+        super().__init__(
+            model="qwen",
+            history_len=10,
+            history_stride=5,
+            motion_dt=0.5,
+            prediction_dt=0.5,
+        )
+
+
+class OpenEMMANativeAgentLLaVA(OpenEMMANativeAgent):
+    def __init__(self):
+        super().__init__(
+            model="llava",
+            history_len=10,
+            history_stride=5,
+            motion_dt=0.5,
+            prediction_dt=0.5,
+        )
+
+
+class OpenEMMANativeAgentLlama(OpenEMMANativeAgent):
+    def __init__(self):
+        super().__init__(
+            model="llama",
+            history_len=10,
+            history_stride=5,
+            motion_dt=0.5,
+            prediction_dt=0.5,
+        )

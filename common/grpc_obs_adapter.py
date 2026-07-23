@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple
 
+
 def unpack_ad_observation(
     obs: Dict[str, Any],
+    step_info: Dict[str, Any],
 ) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], List[Dict[str, Any]]]:
     """
-    Strict adapter for new assembly observation only.
+    Strict adapter for a gRPC observation and its matching step metadata.
     """
     gaussian = obs["gaussian"]
     states = obs["states"]
@@ -15,6 +17,10 @@ def unpack_ad_observation(
 
     obs_img = gaussian["image"]
     obs_info = dict(states)
+    obs_info["scene_token"] = str(step_info["scene_name"])
+    obs_info["relative_timestamp"] = float(step_info["relative_timestamp"]) * 1e-6
+    obs_info["timestamp"] = float(step_info["relative_timestamp"]) * 1e-6
+    obs_info["current_timestamp"] = float(step_info["current_timestamp"]) * 1e-6
     obs_info["cam_params"] = gaussian["camera_info"]
     turn_signal = navigation["turn_signal"]
     if turn_signal == -1:

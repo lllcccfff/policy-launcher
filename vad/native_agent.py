@@ -21,11 +21,17 @@ def _decode_traj_from_pts_bbox(pts_bbox: Dict[str, Any]) -> np.ndarray:
 
 
 class VADNativeAgent:
-    def __init__(
-        self,
-        vad_model: torch.nn.Module,
-    ):
-        self.vad_model = vad_model
+    def __init__(self, device: str):
+        from rl_framework.vad.loader import create_vad
+
+        config = {
+            "config_path": "VAD/projects/configs/VAD/VAD_base_stage_2.py",
+            "checkpoint_path": "VAD/ckpts/VAD_base.pth",
+            "AD_root": "./VAD",
+            "device": device,
+            "runtime_mode": "native_infer",
+        }
+        self.vad_model = create_vad(config)
         self.model_device = self._infer_model_device()
 
     def _infer_model_device(self) -> torch.device:

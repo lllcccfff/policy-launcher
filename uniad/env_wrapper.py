@@ -187,14 +187,10 @@ class UniADWrapper(gym.Wrapper):
         """
         self._reset_episode_stats()
         obs, reset_info = self.env.reset(seed=seed, **kwargs)
-        obs_img, obs_info, navigation_obs, surrounding_obs = unpack_ad_observation(obs)
+        obs_img, obs_info, navigation_obs, surrounding_obs = unpack_ad_observation(obs, reset_info)
         self._latest_surrounding_obs = surrounding_obs
         self._expert_path_info = self._extract_expert_path_info(navigation_obs)
 
-        obs_info["scene_token"] = str(reset_info["scene_name"])
-        obs_info["relative_timestamp"] = float(reset_info["relative_timestamp"]) * 1e-6
-        obs_info["timestamp"] = float(reset_info["relative_timestamp"]) * 1e-6
-        obs_info["current_timestamp"] = float(reset_info["current_timestamp"]) * 1e-6
         self._prev_obs_info = copy.deepcopy(obs_info)
         processed_obs = self._process_observation(obs_img, obs_info) # plan_query and bev_feat
         return processed_obs, obs_info
@@ -233,13 +229,9 @@ class UniADWrapper(gym.Wrapper):
         control_action = (steer, acc) # control action != acc and steer in info
 
         obs, reward, terminated, truncated, info = self.env.step(control_action)
-        obs_img, obs_info, navigation_obs, surrounding_obs = unpack_ad_observation(obs)
+        obs_img, obs_info, navigation_obs, surrounding_obs = unpack_ad_observation(obs, info)
         self._latest_surrounding_obs = surrounding_obs
         self._expert_path_info = self._extract_expert_path_info(navigation_obs)
-        obs_info["scene_token"] = str(info["scene_name"])
-        obs_info["relative_timestamp"] = float(info["relative_timestamp"]) * 1e-6
-        obs_info["timestamp"] = float(info["relative_timestamp"]) * 1e-6
-        obs_info["current_timestamp"] = float(info["current_timestamp"]) * 1e-6
         self._prev_obs_info = copy.deepcopy(obs_info)
 
         processed_obs = self._process_observation(obs_img, obs_info)

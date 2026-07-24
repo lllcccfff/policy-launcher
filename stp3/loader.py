@@ -20,14 +20,14 @@ def create_stp3(stp3_config: Dict[str, Any]) -> torch.nn.Module:
 
     from stp3.trainer import TrainingModule
 
-    trainer = TrainingModule.load_from_checkpoint(str(checkpoint_path), strict=False, map_location=device)
+    trainer = TrainingModule.load_from_checkpoint(str(checkpoint_path), strict=True, map_location=device)
     trainer.eval()
     trainer.to(device)
     model = trainer.model.eval()
 
     cfg = model.cfg
-    if str(cfg.DATASET.NAME) != "carla":
-        raise ValueError(f"ST-P3 gRPC rollout expects a CARLA-config checkpoint, got DATASET.NAME={cfg.DATASET.NAME!r}")
+    if str(cfg.DATASET.NAME) != "nuscenes":
+        raise ValueError(f"ST-P3 gRPC rollout expects a NuScenes checkpoint, got DATASET.NAME={cfg.DATASET.NAME!r}")
     if not bool(cfg.PLANNING.ENABLED):
         raise ValueError("ST-P3 gRPC rollout requires cfg.PLANNING.ENABLED=True")
 

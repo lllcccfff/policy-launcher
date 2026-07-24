@@ -7,10 +7,8 @@ from typing import Any, Deque, Dict, Optional
 import numpy as np
 import torch
 
-from rl_framework.common.coordinates import right_forward_to_front_left
-from rl_framework.stp3.dataparser import parse_stp3_obs
-
-MAX_STEER_RAD = np.deg2rad(40.0)
+from rl_framework.common.trajectory import lidar_to_ego_front_left
+from rl_framework.stp3.dataparser import LIDAR_TOP_TO_EGO, lidar_to_world, parse_stp3_obs
 
 
 class STP3NativeAgent:
@@ -21,7 +19,7 @@ class STP3NativeAgent:
         self.model = create_stp3(
             {
                 "stp3_root": str(repo_root / "ST-P3"),
-                "checkpoint_path": str(repo_root / "ST-P3" / "ckpts" / "stp3_carla.ckpt"),
+                "checkpoint_path": str(repo_root / "ST-P3" / "ckpts" / "stp3_nuscenes.ckpt"),
                 "device": device,
             }
         )
@@ -30,8 +28,7 @@ class STP3NativeAgent:
         self.receptive_field = int(self.cfg.TIME_RECEPTIVE_FIELD)
 
         self._image_history: Deque[Dict[str, Any]] = deque(maxlen=self.receptive_field)
-        self._state_history: Deque[Dict[str, Any]] = deque(maxlen=self.receptive_field)
-        self._frames_seen = 0
+        self._lidar_to_world_history: Deque[np.ndarray] = deque(maxlen=self.receptive_field)
         self._scene_token: str | None = None
 
     def _infer_model_device(self) -> torch.device:
@@ -42,8 +39,7 @@ class STP3NativeAgent:
 
     def reset(self) -> None:
         self._image_history.clear()
-        self._state_history.clear()
-        self._frames_seen = 0
+        self._lidar_to_world_history.clear()
         self._scene_token = None
 
     def _reset_for_scene(self, scene_token: str) -> None:
@@ -54,25 +50,18 @@ class STP3NativeAgent:
     def predict_action(self, obs_img: Dict[str, Any], obs_info: Dict[str, Any]) -> Optional[np.ndarray]:
         self._reset_for_scene(str(obs_info["scene_token"]))
         self._image_history.append(dict(obs_img))
-        self._frames_seen += 1
-        self._state_history.append(
-            {
-                "ego_pos": np.asarray(obs_info["ego_pos"], dtype=np.float32).copy(),
-                "heading_theta": float(obs_info["heading_theta"]),
-            }
-        )
-        if self._frames_seen <= self.receptive_field + 1:
+        self._lidar_to_world_history.append(lidar_to_world(obs_info))
+        if len(self._image_history) < self.receptive_field:
             return None
 
         raw_data = parse_stp3_obs(
             list(self._image_history),
-            list(self._state_history),
+            list(self._lidar_to_world_history),
             obs_info,
             self.cfg,
             self.device,
-            float(obs_info["ego_steer"]) / MAX_STEER_RAD,
         )
-        with torch.no_grad():
+        with torch.inference_mode():
             output = self.model(
                 raw_data["image"],
                 raw_data["intrinsics"],
@@ -97,4 +86,4 @@ class STP3NativeAgent:
             )
 
         final_traj = final_traj[0].detach().cpu().numpy()
-        return right_forward_to_front_left(final_traj[:, :2])
+        return lidar_to_ego_front_left(final_traj, LIDAR_TOP_TO_EGO)

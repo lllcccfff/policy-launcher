@@ -17,7 +17,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a native planning model on a gRPC environment")
     parser.add_argument(
         "--model",
-        choices=("uniad", "vad", "stp3", "opendrivevla", "latent_transfuser", "diffusiondrive", "alpamayo1", "alpamayo1.5", "autovla", "epona", "openemma_gpt", "openemma_qwen", "openemma_llava", "openemma_llama"),
+        choices=("uniad", "vad", "genad", "momad", "stp3", "opendrivevla", "latent_transfuser", "diffusiondrive", "sparsedrive", "alpamayo1", "alpamayo1.5", "autovla", "epona", "openemma_gpt", "openemma_qwen", "openemma_llava", "openemma_llama"),
         required=True,
         help="Native planning model to run",
     )
@@ -34,10 +34,13 @@ def route_agent(model_name: str, device: str):
     agent_map = {
         "uniad": ("rl_framework.uniad.native_agent", "UniADNativeAgent", True),
         "vad": ("rl_framework.vad.native_agent", "VADNativeAgent", True),
+        "genad": ("rl_framework.genad.native_agent", "GenADNativeAgent", True),
+        "momad": ("rl_framework.momad.native_agent", "MomADNativeAgent", True),
         "stp3": ("rl_framework.stp3.native_agent", "STP3NativeAgent", True),
         "opendrivevla": ("rl_framework.opendrivevla.native_agent", "OpenDriveVLANativeAgent", True),
         "latent_transfuser": ("rl_framework.latent_transfuser.native_agent", "LatentTransFuserNativeAgent", True),
         "diffusiondrive": ("rl_framework.diffusiondrive.native_agent", "DiffusionDriveNativeAgent", True),
+        "sparsedrive": ("rl_framework.sparsedrive.native_agent", "SparseDriveNativeAgent", True),
         "alpamayo1": ("rl_framework.alpamayo_r1.native_agent", "AlpamayoR1NativeAgent", True),
         "alpamayo1.5": ("rl_framework.alpamayo1_5.native_agent", "Alpamayo15NativeAgent", True),
         "autovla": ("rl_framework.autovla.native_agent", "AutoVLANativeAgent", True),
@@ -69,6 +72,7 @@ def main() -> int:
                 raise
 
             obs_img, obs_info, _, _ = unpack_ad_observation(obs, reset_info)
+            scene_name = str(reset_info["scene_name"])
 
             total_reward = 0.0
             steps = 0
@@ -76,9 +80,9 @@ def main() -> int:
             truncated = False
 
             for _ in range(args.max_steps):
-                trajectory = agent.predict_action(obs_img, obs_info)
+                action = agent.predict_action(obs_img, obs_info)
 
-                obs, reward, terminated, truncated, step_info = env.step(trajectory)
+                obs, reward, terminated, truncated, step_info = env.step(action)
                 obs_img, obs_info, _, _ = unpack_ad_observation(obs, step_info)
 
                 total_reward += float(reward)

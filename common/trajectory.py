@@ -1,4 +1,6 @@
-﻿import numpy as np
+﻿from collections import deque
+
+import numpy as np
 
 from rl_framework.common.coordinates import front_right_to_front_left, right_forward_to_front_left
 
@@ -34,84 +36,15 @@ def lidar_to_ego_front_left(plan_traj, lidar_to_ego):
     ego_points = lidar_points @ lidar_to_ego.T
     return ego_points[..., :2].astype(np.float32)
 
+class PID:
+    def __init__(self, k_p: float, k_i: float, k_d: float, window_size: int):
+        self.k_p = k_p
+        self.k_i = k_i
+        self.k_d = k_d
+        self.window = deque([0.0] * window_size, maxlen=window_size)
 
-def traj2control(plan_traj, info, horizon=3.0):
-    """Convert (x_front, y_left) relative trajectory to ego-frame control targets."""
-    from rl_framework.ilqr.lqr import plan2control
-
-    horizon = float(horizon)
-    if horizon <= 0.0:
-        raise ValueError(f"trajectory horizon must be positive, got {horizon}")
-    control_dt = 0.1
-
-    N = plan_traj.shape[0]
-    dt_in = horizon / N
-    t_orig = np.linspace(dt_in, horizon, N, dtype=np.float32)
-    t_ref = np.concatenate(([0.0], t_orig))
-
-    x_forward_orig = plan_traj[:, 0]
-    y_left_orig = plan_traj[:, 1]
-
-    x_forward_ref = np.concatenate(([0.0], x_forward_orig))
-    y_left_ref = np.concatenate(([0.0], y_left_orig))
-
-    t_new = np.arange(control_dt, horizon + 1e-6, control_dt, dtype=np.float32)
-    M = t_new.shape[0]
-
-    x_forward_new = np.interp(t_new, t_ref, x_forward_ref)
-    y_left_new = np.interp(t_new, t_ref, y_left_ref)
-    plan_traj_ego = np.stack([x_forward_new, y_left_new], axis=1)
-
-    plan_traj_stats = np.zeros((M + 1, 5), dtype=np.float32)
-    plan_traj_stats[1:, :2] = plan_traj_ego
-
-    headings = np.zeros(M, dtype=np.float32)
-    for i in range(M):
-        if i == 0:
-            delta_vec = plan_traj_ego[min(1, M - 1)] - plan_traj_ego[0]
-        elif i == M - 1:
-            delta_vec = plan_traj_ego[M - 1] - plan_traj_ego[M - 2]
-        else:
-            delta_vec = plan_traj_ego[i + 1] - plan_traj_ego[i - 1]
-        headings[i] = np.arctan2(delta_vec[1], delta_vec[0])
-
-    plan_traj_stats[1:, 2] = headings
-
-    # Desired speed profile derived from consecutive waypoints
-    delta_pos = np.diff(plan_traj_ego, axis=0)
-    segment_dist = np.linalg.norm(delta_pos, axis=1)
-    segment_speed = segment_dist / control_dt
-    ref_speed = np.zeros(M, dtype=np.float32)
-    if M > 0:
-        ref_speed[0] = max(info['ego_velo'], segment_speed[0] if segment_speed.size > 0 else info['ego_velo'])
-    if segment_speed.size > 0:
-        ref_speed[1:] = segment_speed[:M - 1]
-        ref_speed = smooth_1d(ref_speed, kernel_size=5)
-    plan_traj_stats[1:, 3] = ref_speed
-
-    ego_steer_rad = float(info['ego_steer'])
-    max_steer_rad = MAX_STEER_RAD
-    ego_steer_rad = float(np.clip(ego_steer_rad, -max_steer_rad, max_steer_rad))
-
-    curvature = np.zeros(M, dtype=np.float32)
-    eps = 1e-3
-    for i in range(1, M):
-        ds = max(segment_dist[i - 1], eps)
-        dtheta = headings[i] - headings[i - 1]
-        curvature[i] = dtheta / ds
-
-    steer_profile = np.arctan(np.clip(curvature * WHEELBASE, -np.tan(max_steer_rad), np.tan(max_steer_rad)))
-    if M > 1:
-        steer_profile = smooth_1d(steer_profile, kernel_size=5)
-    steer_profile = np.clip(steer_profile, -max_steer_rad, max_steer_rad)
-    plan_traj_stats[1:, 4] = steer_profile
-
-    plan_traj_stats[0, 3] = info['ego_velo']
-    plan_traj_stats[0, 4] = ego_steer_rad
-
-    curr_stat = np.array(
-        [0.0, 0.0, 0.0, info['ego_velo'], ego_steer_rad],
-        dtype=np.float32
-    )
-    acc, steer_rate = plan2control(plan_traj_stats, curr_stat)
-    return acc, steer_rate
+    def step(self, error: float) -> float:
+        self.window.append(error)
+        integral = float(np.mean(self.window))
+        derivative = self.window[-1] - self.window[-2]
+        return self.k_p * error + self.k_i * integral + self.k_d * derivative

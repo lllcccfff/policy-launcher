@@ -1,5 +1,4 @@
 import cv2
-import mmcv
 import torch
 import numpy as np
 from scipy.spatial.transform import Rotation as SCR
@@ -40,6 +39,8 @@ def build_can_bus(info, r_world_ego):
 
 
 def build_image_input(obs, info, camera_order, img_norm_cfg, image_scale):
+    import mmcv
+
     r_world_ego = SCR.from_euler("XYZ", info["ego_rot"]).as_matrix().astype(np.float32)
     ego_to_global = np.eye(4, dtype=np.float32)
     ego_to_global[:3, :3] = r_world_ego

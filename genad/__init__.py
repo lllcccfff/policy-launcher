@@ -1,0 +1,1 @@
+"""GenAD native inference integration."""

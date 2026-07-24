@@ -66,7 +66,7 @@ def _prepare_rgb(obs_img: Dict[str, Any], config: Any) -> torch.Tensor:
 
 
 def _target_point(obs_info: Dict[str, Any]) -> np.ndarray:
-    target_waypoint = obs_info["target_waypoint"]
+    target_waypoint = obs_info["carla_style_target"]
     ego_pos = obs_info["ego_pos"]
 
     target_waypoint_carla = metadrive_to_carla_xy(target_waypoint)

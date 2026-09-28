@@ -31,6 +31,7 @@ def unpack_ad_observation(
         command = 2
     obs_info["command"] = command
     obs_info["route_type"] = navigation["navigating_type"]
+    obs_info["location"] = navigation["location"]
     obs_info["route_waypoints"] = navigation["waypoint"]
     obs_info["target_waypoint"] = navigation["target_waypoint"]
     if "carla_style_target" in navigation:

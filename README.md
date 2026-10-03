@@ -1,103 +1,38 @@
-﻿# RLframework_AD
+# RLframework_AD Evaluation
 
-This directory contains the reinforcement-learning stack that fine-tunes UniAD inside the GaussianDrive/EasyDrive simulator. It covers:
+`eval.py` 通过 gRPC 连接 StreetWorld 仿真服务，运行原生规划模型评测。
 
-- launch scripts (`run_training.py`, `train_ppo.py`) that orchestrate env creation, phased PPO training, checkpointing, and evaluation
-- integration glue so UniAD can ingest simulator observations (`uniad/dataparser`, `uniad/env_wrapper`, `uniad/loader`) and feed RL actions back through an iLQR controller
-- custom policy definitions with LoRA adapters and auxiliary regularization (KL/BC) plus metric tracking for NC/DAC/TTC/COM/RC
+## 运行
 
-The code assumes the repository root still has `UniAD_SIM/` and `simulator/` so UniAD configs/checkpoints and MetaDrive scenes remain accessible.
-
----
-
-## Layout
-
-```
-rl_framework/
-├── run_training.py       # CLI: builds ScenarioEnv factory, prints config, starts train/eval
-├── train_ppo.py          # UniADPPO trainer, TrainingConfig, env wrappers, callbacks, evaluation
-├── ilqr/
-│   ├── lqr.py            # plan2control: converts planned trajectories to throttle/steer via iLQR
-│   ├── lqr_solver.py     # solver implementation + parameters
-│   └── utils.py
-├── common/
-│   ├── trajectory.py     # traj2control + smooth_1d
-│   ├── metrics.py        # EpisodeMetricTracker: NC/DAC/TTC/COM/RC aggregation
-│   └── mmcv_utils.py     # cleanup_mmcv_registries helper
-└── uniad/
-    ├── loader.py         # create_uniad: load UniAD config/ckpt, clean MMCV registries, wrap in MMDP
-    ├── dataparser.py     # parse_uniad_obs: resize/normalize camera stacks, build img_metas + can-bus
-    ├── env_wrapper.py    # UniADWrapper: pipeline obs→UniAD→plan_query/bev, action→control
-    └── policy_network.py # CustomUniADPolicy: LoRA adapters + actor/critic heads for plan_query/bev
-```
-
-### Module responsibilities
-
-| Component | File | Summary |
-| --- | --- | --- |
-| **Launcher** | `run_training.py` | Provides `create_base_env()` (reads `SCENE_CONFIG_DIR`, enables `image_observation`), logs the chosen `TrainingConfig`, and calls `train()` or `run_evaluation()` based on CLI flags. |
-| **Trainer** | `train_ppo.py` | Holds `TrainingConfig` (paths, hyper-parameters, phase presets), `UniADPPO` (SB3 PPO subclass with UniAD-specific regularization), and helpers (`create_env`, `create_ppo_model`, `setup_callbacks`, `train`, `evaluate`). |
-| **UniAD loader** | `uniad/loader.py` | `create_uniad()` resolves config/checkpoint paths within `UniAD_SIM`, loads plugins, fuses Conv+BN, cleans Dice loss registries, and returns an eval-mode `MMDataParallel` UniAD model on the requested GPU. |
-| **Dataparser** | `uniad/dataparser.py` | `parse_uniad_obs()` resizes camera stacks, applies mmcv normalization, computes intrinsics/extrinsics/can-bus, and packages tensors that UniAD expects (`img`, `img_metas`, `command`, pose info). |
-| **Env wrapper** | `uniad/env_wrapper.py` | `UniADWrapper` intercepts MetaDrive observations, calls `parse_uniad_obs` + UniAD forward to produce `plan_query`/`bev_feat` for PPO, converts PPO deltas to trajectories, and feeds them through iLQR to obtain simulator throttle/steer commands; also enriches `info` for metrics. |
-| **Policy** | `uniad/policy_network.py` | `CustomUniADPolicy` wires `plan_query`/`bev_feat` into attention adapters, LoRA-augmented transformer decoders, and actor/critic MLPs, exposing knobs like adapter toggles, log-std bounds, and KL/BC regularization per training phase. |
-| **Controller** | `ilqr/lqr.py` | `plan2control()` takes a smoothed trajectory from PPO + UniAD and computes throttle/brake + steering outputs respecting physical limits (wheelbase, steering rate, acceleration bounds). |
-| **Metrics** | `common/metrics.py` | `EpisodeMetricTracker` collects NC (no collision), DAC, TTC, COM, RC from env infos, letting evaluation mirror UniAD KPI reporting. |
-
----
-
-## Training
-
-> **Prerequisites**: install torch, mmcv, mmdet3d, stable-baselines3, gymnasium, MetaDrive, etc.; ensure `UniAD_SIM/projects/configs/...` and `UniAD_SIM/ckpts/...` contain the intended config/checkpoint; simulator scenes should be under `simulator/GaussianDrive/configs/`. Export `PYTHONPATH` or run from repo root so `rl_framework` and simulator packages resolve.
-
-1. (Optional) pick a scene directory or single JSON:
-   ```bash
-   export SCENE_CONFIG_DIR=simulator/GaussianDrive/configs/exps/sim/scene_train
-   ```
-2. Launch training (defaults to phase 0 schedule):
-   ```bash
-   python -m rl_framework.run_training
-   ```
-   `run_training.main()` creates a `TrainingConfig`, prints its settings (devices, timesteps, clip ranges, phase schedule), builds `base_env_fn = create_base_env`, and calls `train(base_env_fn, config, eval_env_fn)`.
-3. `train()` (see `train_ppo.py`) performs:
-   - load UniAD via `create_uniad()` with `config.uniad_config_path`/`uniad_checkpoint_path`
-   - wrap the simulator with `UniADWrapper(parse_uniad_obs, traj2control)` so PPO observes `plan_query`/`bev_feat`
-   - instantiate `UniADPPO(CustomUniADPolicy, env, policy_kwargs)`; optionally load `config.pretrained_planning_weights`
-   - register callbacks (`CheckpointCallback`, `EvalCallback`, `TensorboardCallback`)
-   - iterate over `config.phase_schedule`, applying preset hyper-parameters via `_apply_model_phase_settings()` before each `model.learn()`
-   - save final model under `config.checkpoint_dir` and VecNormalize stats if used
-
-Artifacts land in `rl_outputs/` by default (`logs/`, `checkpoints_critic_warmup/`, `tensorboard/`, `vec_normalize.pkl`). Adjustable knobs inside `TrainingConfig` include devices, total timesteps, save/eval frequency, adapter toggles, LoRA ranks, and phase-specific LR/clip/regularization settings.
-
-Monitor the run with:
-```bash
-tensorboard --logdir rl_outputs/tensorboard
-```
-
-Interruptions (`Ctrl+C`) trigger a checkpoint save (`interrupted_model.zip`) so training can resume later (pass the zip path to `train(..., model_path=...)`).
-
----
-
-## Evaluation
+从 StreetWorld 仓库根目录执行，先启动仿真服务并选定场景：
 
 ```bash
-python -m rl_framework.run_training --eval
+python -m metadrive.examples.env_server_easydrive --host 127.0.0.1 --port 50052 --max-workers 1
 ```
 
-`run_training.run_evaluation()` rebuilds `TrainingConfig`, locates a checkpoint (defaults to `rl_outputs/checkpoints_critic_warmup/cirr4_train_model.zip`—edit if needed), loads UniAD + the wrapped env, restores PPO weights, and calls `evaluate(model_path, create_base_env, config, n_episodes)`. During evaluation:
+在对应模型的 Python 环境中运行：
 
-- `EpisodeMetricTracker` aggregates NC/DAC/TTC/COM/RC for each episode and prints per-episode + mean summaries.
-- Results can be redirected to `config.eval_results_path` or parsed from stdout for further analysis.
+```bash
+python -m rl_framework.eval --model vad --host 127.0.0.1 --port 50052 --device cuda --timeout 360
+```
 
-To evaluate a different model, set `config.checkpoint_dir`/`model_path` before running or provide your own CLI wrapper that points to the desired `.zip`.
+评测按服务端提供的场景顺序执行；`--max-steps` 限制单场景步数。模型输出交给服务端执行，场景结束后打印步数、累计奖励和终止状态。
 
----
+支持的 `--model`：
 
-## Tips & troubleshooting
+- `uniad`、`vad`、`genad`、`momad`、`stp3`
+- `opendrivevla`、`latent_transfuser`、`diffusiondrive`、`sparsedrive`
+- `alpamayo1`、`alpamayo1.5`、`autovla`、`epona`
+- `openemma_gpt`、`openemma_qwen`、`openemma_llava`、`openemma_llama`
 
-- **Custom scenes**: `SCENE_CONFIG_DIR` can point to a directory of scenario configs or a single file; when it’s a file, `create_base_env` copies it into a temp folder so MetaDrive accepts it.
-- **Devices**: change `config.uniad_device` / `config.policy_device` if you only have one GPU or need CPU mode.
-- **Phase tweaks**: edit `TrainingConfig.phase_presets` or `phase_schedule` to run multi-stage fine-tuning (e.g., warm-up critic-only, then unfreeze adapters).
-- **Dependency conflicts**: `create_uniad` removes stale `DiceCost/DiceLoss` entries from MMCV registries; if loading still fails, check mmcv/mmdet3d versions.
-- **OOM**: reduce `config.n_steps`, `batch_size`, or BEV dimensions (`config.bev_h/w`) and rerun.
+完整参数见 `python -m rl_framework.eval --help`。
 
+## 依赖与目录
+
+各模型需要对应的上游源码、配置、checkpoint 和推理环境；路径由各自的 `native_agent.py` 指定。`requirements.txt` 提供共享依赖，PyTorch、MMCV 等模型依赖按对应模型环境安装。VAD 的已有环境归档可通过 `dockerfile` 构建镜像。OpenDriveVLA 的独立环境与运行说明见 [opendrivevla/README.md](opendrivevla/README.md)。
+
+- `eval.py`：命令行、模型选择和 gRPC 评测循环。
+- `common/`：观测解包、坐标与轨迹转换、张量设备迁移及模型加载辅助。
+- 各模型目录：原生 agent、模型加载器、观测适配及推理扩展。
+
+轨迹控制与场景指标由 StreetWorld 仿真端负责。

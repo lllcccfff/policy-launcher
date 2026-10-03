@@ -1,8 +1,0 @@
-base_config: base.yaml
-
-# ppo_algorithm:
-#   clip_range_vf: 0.1             # Value function clip range (null = no clipping)
-
-# phase_presets:
-#   0:  # Phase 0: Critic warmup
-#     n_epochs: 2

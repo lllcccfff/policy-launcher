@@ -1,4 +1,3 @@
-import copy
 import importlib
 import os
 import sys
@@ -28,21 +27,10 @@ def _import_plugin_from_cfg(cfg: Config, config_rel_path: str) -> None:
     importlib.import_module(module_path)
 
 
-def _to_cpu_state_dict(module: torch.nn.Module) -> Dict[str, torch.Tensor]:
-    return {k: v.detach().cpu().clone() for k, v in module.state_dict().items()}
-
-
 def create_vad(vad_config: Dict[str, Any]):
     config_path = vad_config["config_path"]
     checkpoint_path = vad_config["checkpoint_path"]
     device = vad_config["device"]
-    runtime_mode = str(vad_config.get("runtime_mode", "feature_rl")).strip().lower()
-    supported_modes = {"feature_rl", "native_infer"}
-    if runtime_mode not in supported_modes:
-        raise ValueError(
-            f"Unsupported runtime_mode `{runtime_mode}`. "
-            f"Expected one of {sorted(supported_modes)}."
-        )
     warnings.filterwarnings("ignore")
 
     cleanup_mmcv_registries()
@@ -85,10 +73,7 @@ def create_vad(vad_config: Dict[str, Any]):
 
         cfg.model.pretrained = None
         cfg.model.train_cfg = None
-        cfg.model.type = "VADFeature"
-        if not hasattr(cfg.model, "pts_bbox_head"):
-            raise ValueError("cfg.model.pts_bbox_head is required for VAD")
-        cfg.model.pts_bbox_head.type = "VADHeadFeature"
+        cfg.model.type = "VADNative"
 
         model = build_model(cfg.model, test_cfg=cfg.get("test_cfg"))
 
@@ -112,38 +97,8 @@ def create_vad(vad_config: Dict[str, Any]):
         else:
             model = model.to(device).eval()
 
-        model_impl = model.module if hasattr(model, "module") else model
-        model_impl.runtime_mode = runtime_mode
-        if hasattr(model, "__dict__"):
-            model.runtime_mode = runtime_mode
-
         for param in model.parameters():
             param.requires_grad = False
         return model
     finally:
         os.chdir(original_cwd)
-
-def extract_vad_planning_weights(model) -> Dict[str, Any]:
-    model_impl = model.module if hasattr(model, "module") else model
-    runtime_mode = getattr(model_impl, "runtime_mode", getattr(model, "runtime_mode", "feature_rl"))
-    if runtime_mode != "feature_rl":
-        raise ValueError(
-            "extract_vad_planning_weights only supports runtime_mode='feature_rl'. "
-            f"Got runtime_mode='{runtime_mode}'."
-        )
-    if not hasattr(model_impl, "pts_bbox_head"):
-        raise ValueError("VAD model must have pts_bbox_head")
-    head = model_impl.pts_bbox_head
-    required = ["ego_agent_decoder", "ego_map_decoder", "ego_fut_decoder"]
-    for name in required:
-        if not hasattr(head, name):
-            raise ValueError(f"pts_bbox_head missing required planning module: {name}")
-
-    return {
-        "ego_agent_decoder_state_dict": _to_cpu_state_dict(head.ego_agent_decoder),
-        "ego_map_decoder_state_dict": _to_cpu_state_dict(head.ego_map_decoder),
-        "ego_fut_decoder_state_dict": _to_cpu_state_dict(head.ego_fut_decoder),
-        "ego_agent_decoder_template": copy.deepcopy(head.ego_agent_decoder).cpu(),
-        "ego_map_decoder_template": copy.deepcopy(head.ego_map_decoder).cpu(),
-        "ego_fut_decoder_template": copy.deepcopy(head.ego_fut_decoder).cpu(),
-    }

@@ -1,7 +1,6 @@
 from .dataparser import (
     OpenEMMAHistoryFrame,
     encode_front_image,
-    estimate_curvature,
     integrate_speed_curvature,
 )
 from .native_agent import (
@@ -20,6 +19,5 @@ __all__ = [
     "OpenEMMANativeAgentLLaVA",
     "OpenEMMANativeAgentQwen",
     "encode_front_image",
-    "estimate_curvature",
     "integrate_speed_curvature",
 ]

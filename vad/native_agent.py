@@ -29,20 +29,13 @@ class VADNativeAgent:
             "checkpoint_path": "VAD/ckpts/VAD_base.pth",
             "AD_root": "./VAD",
             "device": device,
-            "runtime_mode": "native_infer",
         }
         self.vad_model = create_vad(config)
         self.model_device = self._infer_model_device()
 
     def _infer_model_device(self) -> torch.device:
-        try:
-            model_impl = self.vad_model.module
-        except AttributeError:
-            model_impl = self.vad_model
-        try:
-            return next(model_impl.parameters()).device
-        except StopIteration:
-            return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model_impl = self.vad_model.module if hasattr(self.vad_model, "module") else self.vad_model
+        return next(model_impl.parameters()).device
 
     def predict_action(self, obs_img: Dict[str, np.ndarray], obs_info: Dict[str, Any]) -> np.ndarray:
         raw_data = parse_vad_obs(obs_img, obs_info)
@@ -52,10 +45,8 @@ class VADNativeAgent:
             results = self.vad_model(
                 return_loss=False,
                 rescale=True,
-                feature_extractor=False,
-                native_inference=True,
                 **raw_data,
-        )
+            )
 
         pts_bbox = results[0]["pts_bbox"]
         traj = _decode_traj_from_pts_bbox(pts_bbox)

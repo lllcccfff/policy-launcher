@@ -1,0 +1,36 @@
+# Inference dependencies; install torch and the bundled MMCV/MMDetection3D
+# separately as described in README.md.
+numpy==1.26.1
+scipy==1.10.1
+scikit-image==0.19.3
+scikit-learn==1.2.2
+matplotlib==3.5.3
+pandas==2.2.3
+opencv-python==4.8.0.76
+numba==0.61.0
+nuscenes-devkit==1.1.11
+lyft-dataset-sdk==0.0.8
+plyfile==1.0.3
+trimesh==2.35.39
+mmdet==2.26.0
+mmsegmentation==0.29.1
+mmengine==0.9.0
+motmetrics==1.4.0
+casadi==3.6.0
+pytorch-lightning==1.2.5
+torchmetrics==0.11.4
+tensorboard==2.14.0
+accelerate==0.29.3
+tokenizers==0.15.2
+transformers @ https://github.com/huggingface/transformers/archive/1c39974a4c4036fd641bc1191cc32799f85715a4.zip
+einops==0.6.1
+einops-exts==0.0.4
+sentencepiece==0.1.99
+gymnasium==0.29.1
+grpcio==1.50.0
+grpcio-tools==1.50.0
+protobuf==4.25.8
+addict==2.4.0
+yapf==0.40.1
+ninja==1.11.1.1
+psutil==5.9.8

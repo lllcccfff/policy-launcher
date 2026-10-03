@@ -1,7 +1,0 @@
-base_config: base.yaml
-
-uniad:
-  ad_root: "UniAD_SIM"
-  config_path: "projects/configs/stage2_e2e/base_e2e.py"
-  checkpoint_path: "ckpts/uniad_base_e2e.pth"
-  pretrained_planning_weights: "actor_ckpts/planning_modules.pth"

@@ -1,9 +1,0 @@
-base_config: base.yaml
-
-architecture:
-  with_adapter: true              # Enable BEV adapter (3-layer CNN)
-  unfreeze_adapter_phase2: true   # Unfreeze adapter in phase 2
-
-learning_rates:
-  actor_adapter_lr_ratio: 0.05    # Adapter LR = actor_lr * ratio
-  adapter_warmup_updates: 15      # Adapter warmup updates

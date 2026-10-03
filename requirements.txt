@@ -1,0 +1,17 @@
+# Shared evaluation dependencies. Install PyTorch and model-specific dependencies
+# in the corresponding model environment.
+scipy==1.10.1
+scikit-learn==1.6.1
+pandas==1.4.4
+matplotlib==3.5.3
+PyYAML==6.0.3
+tqdm==4.65.2
+timm==1.0.24
+pycocotools==2.0.10
+nuscenes-devkit==1.1.9
+lyft-dataset-sdk==0.0.8
+gymnasium==0.29.1
+omegaconf==2.3.0
+grpcio==1.50.0
+grpcio-tools==1.50.0
+protobuf==4.25.8

@@ -5,7 +5,7 @@ from typing import Any, Dict
 
 import torch
 
-from rl_framework.stp3.dataparser import DEFAULT_STP3_ROOT, ensure_stp3_root
+from policy_launcher.stp3.dataparser import DEFAULT_STP3_ROOT, ensure_stp3_root
 
 
 def create_stp3(stp3_config: Dict[str, Any]) -> torch.nn.Module:

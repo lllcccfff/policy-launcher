@@ -5,8 +5,8 @@ from typing import Any, Deque, Dict, Sequence, Tuple
 
 import numpy as np
 
-from rl_framework.openemma.backbone import OpenEMMABackendName, OpenEMMAOfficialVLM
-from rl_framework.openemma.dataparser import (
+from policy_launcher.openemma.backbone import OpenEMMABackendName, OpenEMMAOfficialVLM
+from policy_launcher.openemma.dataparser import (
     OpenEMMAHistoryFrame,
     history_frame_from_observation,
     integrate_speed_curvature,

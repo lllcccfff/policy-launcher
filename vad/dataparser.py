@@ -3,7 +3,7 @@ from typing import Dict
 import numpy as np
 import torch
 
-from rl_framework.uniad.dataparser import CAMERA_ORDER, build_image_input
+from policy_launcher.uniad.dataparser import CAMERA_ORDER, build_image_input
 
 VAD_IMG_NORM_CFG = {
     "mean": np.array([103.530, 116.280, 123.675], dtype=np.float32),

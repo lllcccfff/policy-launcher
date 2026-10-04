@@ -32,7 +32,7 @@ def _command_to_instruction(command: int) -> str:
 
 class AutoVLANativeAgent:
     def __init__(self, device: str):
-        from rl_framework.autovla.loader import create_autovla
+        from policy_launcher.autovla.loader import create_autovla
 
         repo_root = Path(__file__).resolve().parents[2]
         bundle = create_autovla(

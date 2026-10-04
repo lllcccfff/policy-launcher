@@ -11,7 +11,7 @@ from mmcv.parallel import MMDataParallel
 from mmcv.runner import load_checkpoint, wrap_fp16_model
 from mmdet3d.models import build_model
 
-from rl_framework.common.mmcv_utils import cleanup_mmcv_registries
+from policy_launcher.common.mmcv_utils import cleanup_mmcv_registries
 
 
 def _import_plugin_from_cfg(cfg: Config, config_rel_path: str) -> None:
@@ -52,7 +52,7 @@ def create_vad(vad_config: Dict[str, Any]):
         sys.path.insert(0, vad_root)
 
     # Ensure extension classes are registered before build_model().
-    import rl_framework.vad.vad_ext  # noqa: F401
+    import policy_launcher.vad.vad_ext  # noqa: F401
 
     original_cwd = os.getcwd()
 

@@ -4,7 +4,7 @@ from unittest.mock import Mock
 
 import numpy as np
 
-from rl_framework.openemma.backbone import OpenEMMAOfficialVLM
+from policy_launcher.openemma.backbone import OpenEMMAOfficialVLM
 
 
 class Inputs(dict):

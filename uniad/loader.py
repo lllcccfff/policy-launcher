@@ -8,7 +8,7 @@ from mmcv.runner import load_checkpoint, wrap_fp16_model
 from mmcv.cnn import fuse_conv_bn
 from mmcv.parallel import MMDataParallel
 from mmdet3d.models import build_model
-from rl_framework.common.mmcv_utils import cleanup_mmcv_registries
+from policy_launcher.common.mmcv_utils import cleanup_mmcv_registries
 
 
 def create_uniad(uniad_config: dict):

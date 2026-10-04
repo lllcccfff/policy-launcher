@@ -10,7 +10,7 @@ import torchvision
 from PIL import Image
 from scipy.spatial.transform import Rotation as SCR
 
-from rl_framework.uniad.dataparser import LIDAR_TO_EGO_4X4 as LIDAR_TOP_TO_EGO
+from policy_launcher.uniad.dataparser import LIDAR_TO_EGO_4X4 as LIDAR_TOP_TO_EGO
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_STP3_ROOT = REPO_ROOT / "ST-P3"

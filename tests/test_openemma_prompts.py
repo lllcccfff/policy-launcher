@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from rl_framework.openemma.native_agent import (
+from policy_launcher.openemma.native_agent import (
     OpenEMMANativeAgentGPT,
     OpenEMMANativeAgentLlama,
     OpenEMMANativeAgentLLaVA,
@@ -27,7 +27,7 @@ class OpenEmmaPromptTest(unittest.TestCase):
             for interval in (0.5, 0.2, 0.05):
                 with self.subTest(backend=backend, interval=interval):
                     vlm = SimpleNamespace(backend=backend, infer=Mock(side_effect=reference["responses"]))
-                    with patch("rl_framework.openemma.native_agent.OpenEMMAOfficialVLM", return_value=vlm):
+                    with patch("policy_launcher.openemma.native_agent.OpenEMMAOfficialVLM", return_value=vlm):
                         agent = agent_class()
                     # A different fixed configuration for each run; never change it during rollout.
                     agent.motion_dt = interval

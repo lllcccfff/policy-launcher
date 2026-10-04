@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from rl_framework.openemma.native_agent import (
+from policy_launcher.openemma.native_agent import (
     OpenEMMANativeAgentLlama,
     OpenEMMANativeAgentLLaVA,
     OpenEMMANativeAgentQwen,
@@ -29,7 +29,7 @@ class OpenEmmaWarmupTest(unittest.TestCase):
         ]:
             with self.subTest(backend=backend):
                 vlm = SimpleNamespace(backend=backend, infer=Mock(return_value=", ".join(["[4.0, 0.0]"] * 10)))
-                with patch("rl_framework.openemma.native_agent.OpenEMMAOfficialVLM", return_value=vlm):
+                with patch("policy_launcher.openemma.native_agent.OpenEMMAOfficialVLM", return_value=vlm):
                     agent = agent_class()
                 for scene in ["scene-a", "scene-b"]:
                     vlm.infer.reset_mock()
@@ -51,7 +51,7 @@ class OpenEmmaWarmupTest(unittest.TestCase):
             "scene", "lead car", "follow the lane", ", ".join(["[4.0, 0.0]"] * 10),
             "updated scene", "pedestrian", "slow down", ", ".join(["[2.0, 0.0]"] * 10),
         ]))
-        with patch("rl_framework.openemma.native_agent.OpenEMMAOfficialVLM", return_value=vlm):
+        with patch("policy_launcher.openemma.native_agent.OpenEMMAOfficialVLM", return_value=vlm):
             agent = OpenEMMANativeAgentQwen()
         for step in range(10):
             agent.predict_action(*self.observation(step))
@@ -76,7 +76,7 @@ class OpenEmmaWarmupTest(unittest.TestCase):
         vlm = SimpleNamespace(backend="llama", infer=Mock(side_effect=[
             "scene", "objects", "intent", *(["no numeric prediction"] * 3),
         ] * 3))
-        with patch("rl_framework.openemma.native_agent.OpenEMMAOfficialVLM", return_value=vlm):
+        with patch("policy_launcher.openemma.native_agent.OpenEMMAOfficialVLM", return_value=vlm):
             agent = OpenEMMANativeAgentLlama()
         for step in range(9):
             agent.predict_action(*self.observation(step))
@@ -86,7 +86,7 @@ class OpenEmmaWarmupTest(unittest.TestCase):
 
     def test_stationary_history_raises_before_inference(self):
         vlm = SimpleNamespace(backend="qwen", infer=Mock())
-        with patch("rl_framework.openemma.native_agent.OpenEMMAOfficialVLM", return_value=vlm):
+        with patch("policy_launcher.openemma.native_agent.OpenEMMAOfficialVLM", return_value=vlm):
             agent = OpenEMMANativeAgentQwen()
         for _ in range(9):
             agent.predict_action(*self.observation(0))

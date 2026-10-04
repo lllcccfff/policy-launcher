@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 from importlib import import_module
 
-from rl_framework.common.grpc_obs_adapter import unpack_ad_observation
+from policy_launcher.common.grpc_obs_adapter import unpack_ad_observation
 
 def _is_ordered_scenario_exhausted(exc: BaseException) -> bool:
     message = str(exc)
@@ -32,23 +32,23 @@ def parse_args() -> argparse.Namespace:
 
 def route_agent(model_name: str, device: str):
     agent_map = {
-        "uniad": ("rl_framework.uniad.native_agent", "UniADNativeAgent", True),
-        "vad": ("rl_framework.vad.native_agent", "VADNativeAgent", True),
-        "genad": ("rl_framework.genad.native_agent", "GenADNativeAgent", True),
-        "momad": ("rl_framework.momad.native_agent", "MomADNativeAgent", True),
-        "stp3": ("rl_framework.stp3.native_agent", "STP3NativeAgent", True),
-        "opendrivevla": ("rl_framework.opendrivevla.native_agent", "OpenDriveVLANativeAgent", True),
-        "latent_transfuser": ("rl_framework.latent_transfuser.native_agent", "LatentTransFuserNativeAgent", True),
-        "diffusiondrive": ("rl_framework.diffusiondrive.native_agent", "DiffusionDriveNativeAgent", True),
-        "sparsedrive": ("rl_framework.sparsedrive.native_agent", "SparseDriveNativeAgent", True),
-        "alpamayo1": ("rl_framework.alpamayo_r1.native_agent", "AlpamayoR1NativeAgent", True),
-        "alpamayo1.5": ("rl_framework.alpamayo1_5.native_agent", "Alpamayo15NativeAgent", True),
-        "autovla": ("rl_framework.autovla.native_agent", "AutoVLANativeAgent", True),
-        "epona": ("rl_framework.epona.native_agent", "EponaNativeAgent", True),
-        "openemma_gpt": ("rl_framework.openemma.native_agent", "OpenEMMANativeAgentGPT", False),
-        "openemma_qwen": ("rl_framework.openemma.native_agent", "OpenEMMANativeAgentQwen", False),
-        "openemma_llava": ("rl_framework.openemma.native_agent", "OpenEMMANativeAgentLLaVA", False),
-        "openemma_llama": ("rl_framework.openemma.native_agent", "OpenEMMANativeAgentLlama", False),
+        "uniad": ("policy_launcher.uniad.native_agent", "UniADNativeAgent", True),
+        "vad": ("policy_launcher.vad.native_agent", "VADNativeAgent", True),
+        "genad": ("policy_launcher.genad.native_agent", "GenADNativeAgent", True),
+        "momad": ("policy_launcher.momad.native_agent", "MomADNativeAgent", True),
+        "stp3": ("policy_launcher.stp3.native_agent", "STP3NativeAgent", True),
+        "opendrivevla": ("policy_launcher.opendrivevla.native_agent", "OpenDriveVLANativeAgent", True),
+        "latent_transfuser": ("policy_launcher.latent_transfuser.native_agent", "LatentTransFuserNativeAgent", True),
+        "diffusiondrive": ("policy_launcher.diffusiondrive.native_agent", "DiffusionDriveNativeAgent", True),
+        "sparsedrive": ("policy_launcher.sparsedrive.native_agent", "SparseDriveNativeAgent", True),
+        "alpamayo1": ("policy_launcher.alpamayo_r1.native_agent", "AlpamayoR1NativeAgent", True),
+        "alpamayo1.5": ("policy_launcher.alpamayo1_5.native_agent", "Alpamayo15NativeAgent", True),
+        "autovla": ("policy_launcher.autovla.native_agent", "AutoVLANativeAgent", True),
+        "epona": ("policy_launcher.epona.native_agent", "EponaNativeAgent", True),
+        "openemma_gpt": ("policy_launcher.openemma.native_agent", "OpenEMMANativeAgentGPT", False),
+        "openemma_qwen": ("policy_launcher.openemma.native_agent", "OpenEMMANativeAgentQwen", False),
+        "openemma_llava": ("policy_launcher.openemma.native_agent", "OpenEMMANativeAgentLLaVA", False),
+        "openemma_llama": ("policy_launcher.openemma.native_agent", "OpenEMMANativeAgentLlama", False),
     }
     module_name, class_name, needs_device = agent_map[model_name]
     agent_class = getattr(import_module(module_name), class_name)

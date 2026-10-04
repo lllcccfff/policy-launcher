@@ -6,13 +6,13 @@ from typing import Any, Dict, Tuple
 import numpy as np
 import torch
 
-from rl_framework.common.coordinates import front_right_to_front_left
-from rl_framework.latent_transfuser.dataparser import parse_latent_transfuser_obs
+from policy_launcher.common.coordinates import front_right_to_front_left
+from policy_launcher.latent_transfuser.dataparser import parse_latent_transfuser_obs
 
 
 class LatentTransFuserNativeAgent:
     def __init__(self, device: str):
-        from rl_framework.latent_transfuser.loader import create_latent_transfuser
+        from policy_launcher.latent_transfuser.loader import create_latent_transfuser
 
         repo_root = Path(__file__).resolve().parents[2]
         bundle = create_latent_transfuser(

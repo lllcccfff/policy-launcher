@@ -28,7 +28,7 @@ class EgoFrame:
 
 class Alpamayo15NativeAgent:
     def __init__(self, device: str) -> None:
-        from rl_framework.alpamayo1_5.loader import create_alpamayo1_5
+        from policy_launcher.alpamayo1_5.loader import create_alpamayo1_5
 
         repo_root = Path(__file__).resolve().parents[2]
         bundle = create_alpamayo1_5(

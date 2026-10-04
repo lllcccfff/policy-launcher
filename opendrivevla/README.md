@@ -13,7 +13,7 @@ conda create -n opendrivevla python=3.10 pip -y
 conda activate opendrivevla
 python -m pip install pip==24.0 setuptools==69.5.1 wheel==0.43.0
 python -m pip install torch==2.1.2 torchvision==0.16.2 --index-url https://download.pytorch.org/whl/cu121
-python -m pip install --no-compile -r rl_framework/opendrivevla/requirements.txt
+python -m pip install --no-compile -r policy_launcher/opendrivevla/requirements.txt
 
 export CUDA_HOME=/usr/local/cuda-12.1
 export CC=/usr/bin/gcc-11
@@ -36,7 +36,7 @@ python -m pip check
 conda activate 3dv
 CUDA_VISIBLE_DEVICES=0 python -m streetworld.examples.env_server_easydrive \
   --ad-policy-config opendrivevla --host 127.0.0.1 --port 50053 \
-  --web-port 18083 --max-workers 1 \
+  --web-port 18083 \
   --video-output-dir outputs_benchmark/opendrivevla/videos
 ```
 
@@ -48,7 +48,7 @@ CUDA_VISIBLE_DEVICES=0 python -m streetworld.examples.env_server_easydrive \
 
 ```bash
 conda activate opendrivevla
-CUDA_VISIBLE_DEVICES=0 python -m rl_framework.eval \
+CUDA_VISIBLE_DEVICES=0 python -m policy_launcher.launch \
   --model opendrivevla --host 127.0.0.1 --port 50053 --device cuda --timeout 360
 ```
 

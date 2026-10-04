@@ -11,9 +11,9 @@ import numpy as np
 import torch
 from scipy.spatial.transform import Rotation as SCR
 
-from rl_framework.common.tensor import to_device
-from rl_framework.common.trajectory import lidar_to_ego_front_left
-from rl_framework.uniad.dataparser import LIDAR_TO_EGO_4X4, UNIAD_IMG_NORM_CFG, parse_uniad_obs
+from policy_launcher.common.tensor import to_device
+from policy_launcher.common.trajectory import lidar_to_ego_front_left
+from policy_launcher.uniad.dataparser import LIDAR_TO_EGO_4X4, UNIAD_IMG_NORM_CFG, parse_uniad_obs
 
 HISTORY_POINTS = 4
 HISTORY_INTERVAL_S = 0.5
@@ -55,7 +55,7 @@ class OpenDriveVLANativeAgent:
         max_new_tokens: int = 512,
         bf16: bool = False,
     ):
-        from rl_framework.opendrivevla.loader import create_opendrivevla
+        from policy_launcher.opendrivevla.loader import create_opendrivevla
 
         repo_root = Path(__file__).resolve().parents[2]
         root = opendrivevla_root or str(repo_root / "OpenDriveVLA")

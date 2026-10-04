@@ -11,7 +11,7 @@ from mmcv.parallel import MMDataParallel
 from mmcv.runner import load_checkpoint, wrap_fp16_model
 from mmdet3d.models import build_model
 
-from rl_framework.common.mmcv_utils import cleanup_mmcv_registries
+from policy_launcher.common.mmcv_utils import cleanup_mmcv_registries
 
 
 def _import_plugin(cfg: Config, config_rel_path: str) -> None:
@@ -45,7 +45,7 @@ def create_genad(genad_config: Dict[str, Any]):
         config_rel_path = os.path.relpath(config_path, genad_root)
         cfg = Config.fromfile(config_rel_path)
         _import_plugin(cfg, config_rel_path)
-        import rl_framework.genad.genad_ext  # noqa: F401
+        import policy_launcher.genad.genad_ext  # noqa: F401
 
         cfg.model.pretrained = None
         cfg.model.train_cfg = None

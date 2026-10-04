@@ -5,10 +5,10 @@ from typing import Any, Dict
 import numpy as np
 import torch
 
-from rl_framework.common.tensor import to_device
-from rl_framework.common.trajectory import lidar_to_ego_front_left
-from rl_framework.genad.dataparser import parse_genad_obs
-from rl_framework.uniad.dataparser import LIDAR_TO_EGO_4X4
+from policy_launcher.common.tensor import to_device
+from policy_launcher.common.trajectory import lidar_to_ego_front_left
+from policy_launcher.genad.dataparser import parse_genad_obs
+from policy_launcher.uniad.dataparser import LIDAR_TO_EGO_4X4
 
 
 def _decode_trajectory(pts_bbox: Dict[str, Any]) -> np.ndarray:
@@ -20,7 +20,7 @@ def _decode_trajectory(pts_bbox: Dict[str, Any]) -> np.ndarray:
 
 class GenADNativeAgent:
     def __init__(self, device: str):
-        from rl_framework.genad.loader import create_genad
+        from policy_launcher.genad.loader import create_genad
 
         self.model = create_genad(
             {

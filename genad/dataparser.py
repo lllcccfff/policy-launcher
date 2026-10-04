@@ -6,7 +6,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from rl_framework.uniad.dataparser import CAMERA_ORDER, build_image_input
+from policy_launcher.uniad.dataparser import CAMERA_ORDER, build_image_input
 
 
 GENAD_IMG_NORM_CFG = {

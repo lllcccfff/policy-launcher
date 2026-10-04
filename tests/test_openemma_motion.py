@@ -6,8 +6,8 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from rl_framework.openemma.dataparser import parse_speed_curvature
-from rl_framework.openemma.native_agent import OpenEMMANativeAgentLlama
+from policy_launcher.openemma.dataparser import parse_speed_curvature
+from policy_launcher.openemma.native_agent import OpenEMMANativeAgentLlama
 
 
 FIXTURE = json.loads((Path(__file__).parent / "fixtures/openemma_motion_responses.json").read_text())
@@ -64,7 +64,7 @@ class OpenEmmaMotionTest(unittest.TestCase):
         vlm = SimpleNamespace(backend="llama", infer=Mock(side_effect=[
             "scene", "objects", "keep straight", FIXTURE["invalid_object_description"], RAW_PREDICTION,
         ]))
-        with patch("rl_framework.openemma.native_agent.OpenEMMAOfficialVLM", return_value=vlm):
+        with patch("policy_launcher.openemma.native_agent.OpenEMMAOfficialVLM", return_value=vlm):
             agent = OpenEMMANativeAgentLlama()
         for step in range(10):
             trajectory = agent.predict_action({"FRONT": np.zeros((8, 8, 3), dtype=np.uint8)}, {
@@ -83,7 +83,7 @@ class OpenEmmaMotionTest(unittest.TestCase):
             "first scene", "first objects", "keep straight", invalid, invalid, invalid,
             "updated scene", "updated objects", "keep straight", RAW_PREDICTION,
         ]))
-        with patch("rl_framework.openemma.native_agent.OpenEMMAOfficialVLM", return_value=vlm):
+        with patch("policy_launcher.openemma.native_agent.OpenEMMAOfficialVLM", return_value=vlm):
             agent = OpenEMMANativeAgentLlama()
         for step in range(10):
             trajectory = agent.predict_action({"FRONT": np.zeros((8, 8, 3), dtype=np.uint8)}, {

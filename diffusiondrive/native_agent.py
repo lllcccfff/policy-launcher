@@ -6,14 +6,14 @@ from typing import Any, Dict
 import numpy as np
 import torch
 
-from rl_framework.common.trajectory import lidar_to_ego_front_left
-from rl_framework.diffusiondrive.dataparser import FIXED_LIDAR_TOP_TO_EGO, parse_diffusiondrive_obs
+from policy_launcher.common.trajectory import lidar_to_ego_front_left
+from policy_launcher.diffusiondrive.dataparser import FIXED_LIDAR_TOP_TO_EGO, parse_diffusiondrive_obs
 
 
 class DiffusionDriveNativeAgent:
     def __init__(self, model_or_device: torch.nn.Module | str):
         if isinstance(model_or_device, str):
-            from rl_framework.diffusiondrive.loader import create_diffusiondrive
+            from policy_launcher.diffusiondrive.loader import create_diffusiondrive
 
             repo_root = Path(__file__).resolve().parents[2]
             self.diffusiondrive_model = create_diffusiondrive(

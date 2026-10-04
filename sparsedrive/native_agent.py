@@ -6,14 +6,14 @@ from typing import Any, Dict
 import numpy as np
 import torch
 
-from rl_framework.common.trajectory import lidar_to_ego_front_left
-from rl_framework.sparsedrive.dataparser import FIXED_LIDAR_TOP_TO_EGO, parse_sparsedrive_obs
+from policy_launcher.common.trajectory import lidar_to_ego_front_left
+from policy_launcher.sparsedrive.dataparser import FIXED_LIDAR_TOP_TO_EGO, parse_sparsedrive_obs
 
 
 class SparseDriveNativeAgent:
     def __init__(self, model_or_device: torch.nn.Module | str):
         if isinstance(model_or_device, str):
-            from rl_framework.sparsedrive.loader import create_sparsedrive
+            from policy_launcher.sparsedrive.loader import create_sparsedrive
 
             repo_root = Path(__file__).resolve().parents[2]
             self.sparsedrive_model = create_sparsedrive(

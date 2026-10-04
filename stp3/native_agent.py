@@ -7,13 +7,13 @@ from typing import Any, Deque, Dict, Optional
 import numpy as np
 import torch
 
-from rl_framework.common.trajectory import lidar_to_ego_front_left
-from rl_framework.stp3.dataparser import LIDAR_TOP_TO_EGO, lidar_to_world, parse_stp3_obs
+from policy_launcher.common.trajectory import lidar_to_ego_front_left
+from policy_launcher.stp3.dataparser import LIDAR_TOP_TO_EGO, lidar_to_world, parse_stp3_obs
 
 
 class STP3NativeAgent:
     def __init__(self, device: str):
-        from rl_framework.stp3.loader import create_stp3
+        from policy_launcher.stp3.loader import create_stp3
 
         repo_root = Path(__file__).resolve().parents[2]
         self.model = create_stp3(

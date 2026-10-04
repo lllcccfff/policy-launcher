@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from PIL import Image
 
-from rl_framework.common.coordinates import (
+from policy_launcher.common.coordinates import (
     metadrive_to_carla_xy,
     metadrive_to_carla_yaw,
     rotation_matrix_2d,

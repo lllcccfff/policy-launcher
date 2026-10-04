@@ -5,10 +5,10 @@ from typing import Any, Dict
 import numpy as np
 import torch
 
-from rl_framework.common.tensor import to_device
-from rl_framework.common.trajectory import lidar_to_ego_front_left
-from rl_framework.uniad.dataparser import LIDAR_TO_EGO_4X4
-from rl_framework.vad.dataparser import parse_vad_obs
+from policy_launcher.common.tensor import to_device
+from policy_launcher.common.trajectory import lidar_to_ego_front_left
+from policy_launcher.uniad.dataparser import LIDAR_TO_EGO_4X4
+from policy_launcher.vad.dataparser import parse_vad_obs
 
 def _decode_traj_from_pts_bbox(pts_bbox: Dict[str, Any]) -> np.ndarray:
     preds = pts_bbox["ego_fut_preds"].detach().cpu().numpy().astype(np.float32)
@@ -22,7 +22,7 @@ def _decode_traj_from_pts_bbox(pts_bbox: Dict[str, Any]) -> np.ndarray:
 
 class VADNativeAgent:
     def __init__(self, device: str):
-        from rl_framework.vad.loader import create_vad
+        from policy_launcher.vad.loader import create_vad
 
         config = {
             "config_path": "VAD/projects/configs/VAD/VAD_base_stage_2.py",

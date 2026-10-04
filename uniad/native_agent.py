@@ -5,9 +5,9 @@ from typing import Any, Dict
 import numpy as np
 import torch
 
-from rl_framework.common.tensor import to_device
-from rl_framework.common.trajectory import lidar_to_ego_front_left
-from rl_framework.uniad.dataparser import LIDAR_TO_EGO_4X4, parse_uniad_obs
+from policy_launcher.common.tensor import to_device
+from policy_launcher.common.trajectory import lidar_to_ego_front_left
+from policy_launcher.uniad.dataparser import LIDAR_TO_EGO_4X4, parse_uniad_obs
 
 def _to_numpy(value: Any) -> np.ndarray:
     if isinstance(value, torch.Tensor):
@@ -17,7 +17,7 @@ def _to_numpy(value: Any) -> np.ndarray:
 
 class UniADNativeAgent:
     def __init__(self, device: str):
-        from rl_framework.uniad.loader import create_uniad
+        from policy_launcher.uniad.loader import create_uniad
 
         config = {
             "config_path": "UniAD_SIM/projects/configs/stage2_e2e/base_e2e.py",

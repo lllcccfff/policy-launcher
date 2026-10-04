@@ -10,7 +10,7 @@ from scipy.spatial.transform import Rotation as SCR
 
 class EponaNativeAgent:
     def __init__(self, device: str):
-        from rl_framework.epona.loader import create_epona
+        from policy_launcher.epona.loader import create_epona
 
         repo_root = Path(__file__).resolve().parents[2]
         bundle = create_epona(

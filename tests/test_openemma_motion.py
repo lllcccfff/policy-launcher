@@ -15,17 +15,16 @@ RAW_PREDICTION = ", ".join(["[4.0, 0.0]"] * 10)
 
 
 class OpenEmmaMotionTest(unittest.TestCase):
-    def test_recorded_responses_exclude_echoed_history(self):
+    def test_recorded_responses_take_the_original_first_pairs(self):
         for case in FIXTURE["cases"]:
             with self.subTest(case=case["name"]):
-                expected = np.asarray(case["future_pairs"], dtype=np.float32)
+                expected = np.asarray(case["first_pairs"], dtype=np.float32)
                 expected[:, 1] /= 100.0
                 np.testing.assert_array_equal(parse_speed_curvature(case["response"]), expected)
 
     def test_raw_list_and_prediction_with_trailing_explanation(self):
         for response in [
             RAW_PREDICTION,
-            ",\n".join(["[ 4.0 , -0.0 ]"] * 10),
             RAW_PREDICTION + "\n\nNote: The future speeds and curvatures are based on the assumption "
             "that the car maintains its current speed and direction.",
             "The predicted future speeds and curvatures are: " + RAW_PREDICTION
@@ -42,9 +41,8 @@ class OpenEmmaMotionTest(unittest.TestCase):
             with self.subTest(count=count):
                 np.testing.assert_array_equal(parse_speed_curvature(response), [[4.0, 0.0]] * count)
 
-    def test_missing_and_ambiguous_predictions_are_rejected(self):
-        invalid = [
-            FIXTURE["invalid_object_description"],
+    def test_extra_pairs_and_historical_labels_follow_the_original_parser(self):
+        responses = [
             "Historical speeds and curvatures: " + RAW_PREDICTION,
             RAW_PREDICTION + ", " + RAW_PREDICTION,
             RAW_PREDICTION + "\nHistorical speeds and curvatures: [4.0, 0.0]",
@@ -52,7 +50,12 @@ class OpenEmmaMotionTest(unittest.TestCase):
             "Future speeds and curvatures: " + RAW_PREDICTION
             + "\nAlternative future speeds and curvatures: " + RAW_PREDICTION,
         ]
-        for response in invalid:
+        for response in responses:
+            with self.subTest(response=response):
+                np.testing.assert_array_equal(parse_speed_curvature(response), [[4.0, 0.0]] * 10)
+
+    def test_responses_without_original_numeric_matches_are_rejected(self):
+        for response in (FIXTURE["invalid_object_description"], "[ 4.0 , 0.0 ]"):
             with self.subTest(response=response):
                 with self.assertRaises(ValueError):
                     parse_speed_curvature(response)

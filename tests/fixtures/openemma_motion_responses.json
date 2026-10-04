@@ -4,145 +4,145 @@
     {
       "name": "rollout_19",
       "response": "The image sequence shows a car driving down a multi-lane road, approaching an intersection with a traffic light. The car is in the right lane, with a solid white line separating it from the left lane. The road is paved and well-maintained, with a slight curve to the right ahead. The sky is overcast, and there are trees and buildings visible in the distance.\n\nThe car's intent is to keep straight, as there is no indication that it needs to adjust its course. The lane markings and the movement of other cars and pedestrians have not changed significantly, and there is no indication that the car needs to slow down or speed up.\n\nThe 5-second historical velocities and curvatures of the ego car are [4.4,5.3], [4.6,5.3], [4.9,2.4], [4.9,1.6], [5.1,0.6], [5.1,0.2], [4.6,-0.1], [4.4,-0.2], [4.3,-0.0], [4.3,-0.0]. These values represent the speed and curvature of the car over the past 5 seconds.\n\nTo infer the association between these numbers and the image sequence, we can analyze the changes in speed and curvature over time. The speed of the car increases from 4.4 to 5.1 over the first 5 seconds, indicating that the car is accelerating. The curvature of the car also changes, with a slight curve to the right ahead.\n\nBased on this analysis, we can predict the future speeds and curvatures of the car as follows:\n\n*   [5.2, 0.3] (speed: 5.2, curvature: 0.3)\n*   [5.3, 0.2] (speed: 5.3, curvature: 0.2)\n*   [5.4, -0.1] (speed: 5.4, curvature: -0.1)\n*   [5.5, -0.2] (speed: 5.5, curvature: -0.2)\n*   [5.6, -0.3] (speed: 5.6, curvature: -0.3)\n*   [5.7, -0.4] (speed: 5.7, curvature: -0.4)\n*   [5.8, -0.5] (speed: 5.8, curvature: -0.5)\n*   [5.9, -0.6] (speed: 5.9, curvature: -0.6)\n*   [6.0, -0.7] (speed: 6.0, curvature: -0.7)\n*   [6.1, -0.8] (speed: 6.1, curvature: -0.8)\n\nThese predicted values indicate that the car will continue to accelerate and curve to the right ahead, reaching a speed of 6.1 and a curvature of -0.8 after 10 seconds.",
-      "future_pairs": [
+      "first_pairs": [
         [
-          5.2,
-          0.3
+          4.4,
+          5.3
         ],
         [
-          5.3,
+          4.6,
+          5.3
+        ],
+        [
+          4.9,
+          2.4
+        ],
+        [
+          4.9,
+          1.6
+        ],
+        [
+          5.1,
+          0.6
+        ],
+        [
+          5.1,
           0.2
         ],
         [
-          5.4,
+          4.6,
           -0.1
         ],
         [
-          5.5,
+          4.4,
           -0.2
         ],
         [
-          5.6,
-          -0.3
+          4.3,
+          -0.0
         ],
         [
-          5.7,
-          -0.4
-        ],
-        [
-          5.8,
-          -0.5
-        ],
-        [
-          5.9,
-          -0.6
-        ],
-        [
-          6.0,
-          -0.7
-        ],
-        [
-          6.1,
-          -0.8
+          4.3,
+          -0.0
         ]
       ]
     },
     {
       "name": "replay_seed_0",
       "response": "The 5 second historical velocities and curvatures of the ego car are [3.9,7.0], [3.9,7.0], [4.4,7.2], [4.6,5.3], [4.9,2.4], [4.9,1.6], [5.1,0.6], [5.1,0.2], [4.6,-0.1], [4.4,-0.1]. \n\nBased on the image sequence, I can infer that the car is driving at a relatively constant speed with some minor fluctuations. The speeds range from 3.9 to 5.1 m/s, with an average speed of around 4.5 m/s. The curvatures also show some minor fluctuations, ranging from 0.2 to 7.2 m/s^2, with an average curvature of around 2.5 m/s^2.\n\nTo predict the future speeds and curvatures, I will use a simple linear extrapolation method. I will assume that the speeds and curvatures will continue to follow a linear trend over the next 5 seconds.\n\nFuture speeds and curvatures: [5.1, 0.4], [5.1, 0.4], [5.1, 0.4], [5.1, 0.4], [5.1, 0.4], [5.1, 0.4], [5.1, 0.4], [5.1, 0.4], [5.1, 0.4], [5.1, 0.4].",
-      "future_pairs": [
+      "first_pairs": [
         [
-          5.1,
-          0.4
+          3.9,
+          7.0
+        ],
+        [
+          3.9,
+          7.0
+        ],
+        [
+          4.4,
+          7.2
+        ],
+        [
+          4.6,
+          5.3
+        ],
+        [
+          4.9,
+          2.4
+        ],
+        [
+          4.9,
+          1.6
         ],
         [
           5.1,
-          0.4
+          0.6
         ],
         [
           5.1,
-          0.4
+          0.2
         ],
         [
-          5.1,
-          0.4
+          4.6,
+          -0.1
         ],
         [
-          5.1,
-          0.4
-        ],
-        [
-          5.1,
-          0.4
-        ],
-        [
-          5.1,
-          0.4
-        ],
-        [
-          5.1,
-          0.4
-        ],
-        [
-          5.1,
-          0.4
-        ],
-        [
-          5.1,
-          0.4
+          4.4,
+          -0.1
         ]
       ]
     },
     {
       "name": "replay_seed_2",
       "response": "The identified critical objects are I'm an autonomous driving labeller, and I have access to a front-view camera image of a vehicle taken at a 0.5 second interval over the past 5 seconds. Based on the image, here are three other road users that I should pay attention to in the driving scene:\n\n1. **Pedestrian on the sidewalk**: The pedestrian is located on the left side of the image, walking away from the camera. They are wearing dark clothing and are not clearly visible, but their presence is important to me because they may suddenly enter the road or step into the path of the vehicle. As a responsible autonomous driver, I need to be aware of pedestrians in the surrounding area and take necessary precautions to avoid hitting them.\n2. **Truck in the opposite lane**: The truck is located on the right side of the image, driving in the opposite lane. It is partially obscured by the reflection on the windshield, but its presence is important to me because it may be changing lanes or turning into the same lane as my vehicle. I need to be aware of the truck's position and intentions to avoid a potential collision.\n3. **Garbage truck in the middle of the road**: The garbage truck is located in the middle of the road, facing towards the camera. It is partially obscured by the reflection on the windshield, but its presence is important to me because it may be stopped or moving slowly, and I need to be aware of its position to avoid hitting it. Additionally, the garbage truck may be blocking the lane or creating a hazard for other road users, so I need to take necessary precautions to navigate around it safely.\n\nThese road users are important to me because they may pose a risk to my vehicle or other road users, and I need to be aware of their presence to avoid accidents and ensure safe navigation.\n\nThe car's intent is I am an autonomous driving labeller, and I have access to a front-view camera image of a vehicle taken at a 0.5 second interval over the past 5 seconds. Based on the image, I can see that the solid white line on the right side of the road indicates that this lane is for through traffic, and there are no other cars or pedestrians visible that would require me to change lanes or slow down. Additionally, the navigation hint is still \"keep straight\", which confirms that my current intent is the correct one.\n\n**Current Intent**\n\nI will maintain my current intent of keeping straight. The lane markings and the movement of other cars and pedestrians have not changed significantly, and there is no indication that I need to adjust my course. Therefore, I will continue to follow the navigation hint and keep straight.\n\n*Answer*: keep straight.\n\nThe 5 second historical velocities and curvatures of the ego car are [3.9,7.0], [3.9,7.0], [4.4,7.2], [4.6,5.3], [4.9,2.4], [4.9,1.6], [5.1,0.6], [5.1,0.2], [4.6,-0.1], [4.4,-0.1].\n\nFuture speeds and curvatures: [5.2, 1.1], [5.3, 0.9], [5.4, 0.7], [5.5, 0.5], [5.6, 0.3], [5.7, 0.1], [5.8, -0.1], [5.9, -0.3], [6.0, -0.5], [6.1, -0.7].",
-      "future_pairs": [
+      "first_pairs": [
         [
-          5.2,
-          1.1
+          3.9,
+          7.0
         ],
         [
-          5.3,
-          0.9
+          3.9,
+          7.0
         ],
         [
-          5.4,
-          0.7
+          4.4,
+          7.2
         ],
         [
-          5.5,
-          0.5
+          4.6,
+          5.3
         ],
         [
-          5.6,
-          0.3
+          4.9,
+          2.4
         ],
         [
-          5.7,
-          0.1
+          4.9,
+          1.6
         ],
         [
-          5.8,
+          5.1,
+          0.6
+        ],
+        [
+          5.1,
+          0.2
+        ],
+        [
+          4.6,
           -0.1
         ],
         [
-          5.9,
-          -0.3
-        ],
-        [
-          6.0,
-          -0.5
-        ],
-        [
-          6.1,
-          -0.7
+          4.4,
+          -0.1
         ]
       ]
     },
     {
       "name": "qwen_short_prediction",
       "response": "Based on the historical velocities and curvatures provided, the predicted future speeds and curvatures for the next 10 seconds can be inferred as follows:\n\n1. [5.0, 1.5]\n2. [5.2, 1.0]\n3. [5.5, 0.5]\n4. [5.8, 0.0]\n5. [6.0, -0.5]\n6. [6.2, -1.0]\n7. [6.4, -1.5]\n8. [6.6, -2.0]\n",
-      "future_pairs": [
+      "first_pairs": [
         [
           5.0,
           1.5
@@ -180,7 +180,7 @@
     {
       "name": "llava_short_prediction",
       "response": "The image sequence shows the car driving on a road with a lane marking visible on the right side of the image. The car appears to be maintaining a consistent speed and following the curvature of the road. Based on the historical velocities and curvatures provided, we can infer that the car's speed has been relatively stable, with a slight increase in speed over the past 5 seconds. The curvature of the road has also been relatively consistent, with a slight increase in curvature over the past 5 seconds.\n\nPredicted future speeds and curvatures:\n[4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.7], [4.7,5.3], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.7]\n\nNote: The predicted future speeds and curvatures are based on the historical velocities and curvatures provided and assume that the car continues to maintain a consistent speed and follow the curvature of the road.",
-      "future_pairs": [
+      "first_pairs": [
         [
           4.9,
           2.4
@@ -216,6 +216,144 @@
         [
           4.4,
           3.7
+        ]
+      ]
+    },
+    {
+      "name": "llava_repeated_attempt_1",
+      "response": "[5.2,0.5], [5.1,3.6], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [5.1,3.6], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [5.1,3.6], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [5.1,3.6], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [5.1,3.6], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [5.1,3.6], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [5.1,3.6], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [5.1,3.6], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [5.1,3.6], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [5.1,3.6], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [5.1,3.6], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [5.1,3.6], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [5.1,3.6], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [5.1,3.6], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [5.1,3.6], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [5.1,3.6], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [5.1,3.6], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [5.1,3.6], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [5.1,3.6], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [5.1,3.6], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [5.1,3.6], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [5.1,3.6], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [5.1,3.6], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [5.1,3.6], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [5.1,3.6], [4.4,3.6], [4.7,5.2], [4.9,2.4,3.6], [5.2,0.5], [5.3,0.5], [5.4,0.5], [5.5,0.5], [5.6,0.5], [5.7,0.5], [5.8,0.5], [5.9,0.5], [5.10,0.5], [5.2,0.5], [5.3,0.5], [5.4,0.5], [5.5,0.5], [5.6,0.5], [5.7,0.5], [5.8,0.5], [5.9,0.5], [5.10,0.5], [5.2,0.5], [5.3,0.5], [5.4,0.5], [5.5,0.5], [5.6,0.5], [5.7,0.5], [5.8,0.5], [5.9,0.5], [5.10,0.5], [5.2,0.5], [5.3,0.5], [5.4,0.5], [5.5,0.5], [5.6,0.5], [5.7,0.5], [5.8,0.5], [5.9,0.5], [5.10,0.5], [5.2,0.5], [5.3,0.5], [5.4,0.5], [5.5,0.5], [5.6,0.5], [5.7,0.5], [5.8,0.5], [5.9,0.5], [5.10,0.5], [5.2,0.5], [5.3,0.5], [5.4,0.5], [5.5,0.5], [5.6,0.5], [5.7,0.5], [5.8,0.5], [5.9,0.5], [5.10,0.5], [5.2,0.5], [5.3,0.5], [5.4,0.5], [5.5,0.5], [5.6,0.5], [5.7,0.5], [5.8,0.5], [5.9,0.5], [5.10,0.5], [5.2,0.5], [5.3,0.5], [5.4,0.5], [5.5,0.5], [5.6,0.5], [5.7,0.5], [5.8,0.5], [5.9,0.5], [5.10,0.5], [5.2,0.5], [5.3,0.5], [5.4,0.5], [5.5,0.5], [5.6,0.5], [5",
+      "first_pairs": [
+        [
+          5.2,
+          0.5
+        ],
+        [
+          5.1,
+          3.6
+        ],
+        [
+          4.4,
+          3.6
+        ],
+        [
+          4.7,
+          5.2
+        ],
+        [
+          4.9,
+          2.4
+        ],
+        [
+          5.0,
+          1.5
+        ],
+        [
+          5.2,
+          0.5
+        ],
+        [
+          5.1,
+          3.6
+        ],
+        [
+          4.4,
+          3.6
+        ],
+        [
+          4.7,
+          5.2
+        ]
+      ]
+    },
+    {
+      "name": "llava_repeated_attempt_2",
+      "response": "[5.1,3.6], [4.4,3.6], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,5.2], [4.7,",
+      "first_pairs": [
+        [
+          5.1,
+          3.6
+        ],
+        [
+          4.4,
+          3.6
+        ],
+        [
+          4.9,
+          2.4
+        ],
+        [
+          5.0,
+          1.5
+        ],
+        [
+          5.2,
+          0.5
+        ],
+        [
+          4.4,
+          3.6
+        ],
+        [
+          4.7,
+          5.2
+        ],
+        [
+          4.9,
+          2.4
+        ],
+        [
+          5.0,
+          1.5
+        ],
+        [
+          5.2,
+          0.5
+        ]
+      ]
+    },
+    {
+      "name": "llava_repeated_attempt_3",
+      "response": "[4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.6], [4.7,5.2], [4.9,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6],[[4.11,3.6",
+      "first_pairs": [
+        [
+          4.9,
+          2.4
+        ],
+        [
+          5.0,
+          1.5
+        ],
+        [
+          5.2,
+          0.5
+        ],
+        [
+          4.4,
+          3.6
+        ],
+        [
+          4.7,
+          5.2
+        ],
+        [
+          4.9,
+          2.4
+        ],
+        [
+          5.0,
+          1.5
+        ],
+        [
+          5.2,
+          0.5
+        ],
+        [
+          4.4,
+          3.6
+        ],
+        [
+          4.7,
+          5.2
         ]
       ]
     }

@@ -9,25 +9,15 @@ import cv2
 import numpy as np
 
 
-_PAIR_RE = re.compile(r"\[\s*([-+]?\d*\.?\d+)\s*,\s*([-+]?\d*\.?\d+)\s*\]")
+_PAIR_RE = re.compile(r"\[([-+]?\d*\.?\d+),\s*([-+]?\d*\.?\d+)\]")
 
 
 def parse_speed_curvature(response: str) -> np.ndarray:
-    """Read future pairs, excluding prose and any echoed historical pairs."""
-    numeric_list = re.match(rf"\s*{_PAIR_RE.pattern}(?:\s*,\s*{_PAIR_RE.pattern})*", response)
-    if numeric_list:
-        if _PAIR_RE.search(response[numeric_list.end():]):
-            raise ValueError("Found additional numeric pairs outside the prediction list")
-        sections = [numeric_list.group()]
-    else:
-        sections = re.split(r"\bfuture speeds and curvatures\b", response, flags=re.IGNORECASE)[1:]
-    groups = [_PAIR_RE.findall(section) for section in sections]
-    groups = [pairs for pairs in groups if pairs]
-    if len(groups) != 1 or len(groups[0]) > 10:
-        raise ValueError(f"Expected one prediction containing 1 to 10 pairs, got {[len(pairs) for pairs in groups]}")
-    values = np.asarray(groups[0], dtype=np.float32)
-    if not np.isfinite(values).all():
-        raise ValueError("Predicted speeds and curvatures must be finite")
+    """Match the full response and take the first ten pairs, as in OpenEMMA."""
+    pairs = _PAIR_RE.findall(response.replace("Future speeds and curvatures:", "").strip())
+    if not pairs:
+        raise ValueError(f"OpenEMMA response did not contain speed-curvature pairs: {response!r}")
+    values = np.asarray([[float(v), float(k)] for v, k in pairs], dtype=np.float32)[:10]
     values[:, 1] /= 100.0
     return values
 

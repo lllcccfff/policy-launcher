@@ -1,0 +1,110 @@
+{
+  "repository": "https://github.com/taco-group/openemma",
+  "commit": "8403ea636696c5c10e8fdeca566410de0a07e449",
+  "url": "https://raw.githubusercontent.com/taco-group/openemma/8403ea636696c5c10e8fdeca566410de0a07e449/main.py",
+  "source_sha256": "ccaef97688cd011993dbf3e2230dd7e3378ff6870912f491c71d298017410b2f",
+  "speeds": [
+    0,
+    0.05,
+    1.25,
+    3.55,
+    4,
+    4.15,
+    5.25,
+    6.75,
+    9.95,
+    12.05
+  ],
+  "curvatures": [
+    0,
+    -0.0005,
+    0.0145,
+    -0.0145,
+    0.0055,
+    -0.0055,
+    0.1,
+    -0.1,
+    0.0035,
+    -0.0035
+  ],
+  "responses": [
+    "A straight road.\nA red light.",
+    "A pedestrian on the left.",
+    "slow down for the pedestrian",
+    "[4.0, 0.0], [4.0, 0.0], [4.0, 0.0], [4.0, 0.0], [4.0, 0.0], [4.0, 0.0], [4.0, 0.0], [4.0, 0.0], [4.0, 0.0], [4.0, 0.0]",
+    "The pedestrian crossed.",
+    "A car ahead.",
+    "follow the car",
+    "[2.0, 0.0], [2.0, 0.0], [2.0, 0.0], [2.0, 0.0], [2.0, 0.0], [2.0, 0.0], [2.0, 0.0], [2.0, 0.0], [2.0, 0.0], [2.0, 0.0]"
+  ],
+  "calls": {
+    "standard": [
+      {
+        "text": "You are a autonomous driving labeller. You have access to these front-view camera images of a car taken at a 0.5 second interval over the past 5 seconds. Imagine you are driving the car. Describe the driving scene according to traffic lights, movements of other cars or pedestrians and lane markings.",
+        "sys_message": null
+      },
+      {
+        "text": "You are a autonomous driving labeller. You have access to a front-view camera images of a vehicle taken at a 0.5 second interval over the past 5 seconds. Imagine you are driving the car. What other road users should you pay attention to in the driving scene? List two or three of them, specifying its location within the image of the driving scene and provide a short description of the that road user on what it is doing, and why it is important to you.",
+        "sys_message": null
+      },
+      {
+        "text": "You are a autonomous driving labeller. You have access to a front-view camera images of a vehicle taken at a 0.5 second interval over the past 5 seconds. Imagine you are driving the car. Based on the lane markings and the movement of other cars and pedestrians, describe the desired intent of the ego car. Is it going to follow the lane to turn left, turn right, or go straight? Should it maintain the current speed or slow down or speed up?",
+        "sys_message": null
+      },
+      {
+        "text": "These are frames from a video taken by a camera mounted in the front of a car. The images are taken at a 0.5 second interval. \n        The scene is described as follows: A straight road.\nA red light.. \n        The identified critical objects are A pedestrian on the left.. \n        The car's intent is slow down for the pedestrian. \n        The 5 second historical velocities and curvatures of the ego car are [0.0,0.0], [0.1,-0.1], [1.2,1.4], [3.5,-1.4], [4.0,0.6], [4.2,-0.6], [5.2,10.0], [6.8,-10.0], [9.9,0.4], [12.1,-0.4]. \n        Infer the association between these numbers and the image sequence. Generate the predicted future speeds and curvatures in the format [speed_1, curvature_1], [speed_2, curvature_2],..., [speed_10, curvature_10]. Write the raw text not markdown or latex. Future speeds and curvatures:",
+        "sys_message": "You are a autonomous driving labeller. You have access to a front-view camera image of a vehicle, a sequence of past speeds, a sequence of past curvatures, and a driving rationale. Each speed, curvature is represented as [v, k], where v corresponds to the speed, and k corresponds to the curvature. A positive k means the vehicle is turning left. A negative k means the vehicle is turning right. The larger the absolute value of k, the sharper the turn. A close to zero k means the vehicle is driving straight. As a driver on the road, you should follow any common sense traffic rules. You should try to stay in the middle of your lane. You should maintain necessary distance from the leading vehicle. You should observe lane markings and follow them.  Your task is to do your best to predict future speeds and curvatures for the vehicle over the next 10 timesteps given vehicle intent inferred from the image. Make a best guess if the problem is too difficult for you. If you cannot provide a response people will get injured.\n"
+      },
+      {
+        "text": "You are a autonomous driving labeller. You have access to these front-view camera images of a car taken at a 0.5 second interval over the past 5 seconds. Imagine you are driving the car. Describe the driving scene according to traffic lights, movements of other cars or pedestrians and lane markings.",
+        "sys_message": null
+      },
+      {
+        "text": "You are a autonomous driving labeller. You have access to a front-view camera images of a vehicle taken at a 0.5 second interval over the past 5 seconds. Imagine you are driving the car. What other road users should you pay attention to in the driving scene? List two or three of them, specifying its location within the image of the driving scene and provide a short description of the that road user on what it is doing, and why it is important to you.",
+        "sys_message": null
+      },
+      {
+        "text": "You are a autonomous driving labeller. You have access to a front-view camera images of a vehicle taken at a 0.5 second interval over the past 5 seconds. Imagine you are driving the car. Half a second ago your intent was to slow down for the pedestrian. Based on the updated lane markings and the updated movement of other cars and pedestrians, do you keep your intent or do you change it? Explain your current intent: ",
+        "sys_message": null
+      },
+      {
+        "text": "These are frames from a video taken by a camera mounted in the front of a car. The images are taken at a 0.5 second interval. \n        The scene is described as follows: The pedestrian crossed.. \n        The identified critical objects are A car ahead.. \n        The car's intent is follow the car. \n        The 5 second historical velocities and curvatures of the ego car are [0.0,0.0], [0.1,-0.1], [1.2,1.4], [3.5,-1.4], [4.0,0.6], [4.2,-0.6], [5.2,10.0], [6.8,-10.0], [9.9,0.4], [12.1,-0.4]. \n        Infer the association between these numbers and the image sequence. Generate the predicted future speeds and curvatures in the format [speed_1, curvature_1], [speed_2, curvature_2],..., [speed_10, curvature_10]. Write the raw text not markdown or latex. Future speeds and curvatures:",
+        "sys_message": "You are a autonomous driving labeller. You have access to a front-view camera image of a vehicle, a sequence of past speeds, a sequence of past curvatures, and a driving rationale. Each speed, curvature is represented as [v, k], where v corresponds to the speed, and k corresponds to the curvature. A positive k means the vehicle is turning left. A negative k means the vehicle is turning right. The larger the absolute value of k, the sharper the turn. A close to zero k means the vehicle is driving straight. As a driver on the road, you should follow any common sense traffic rules. You should try to stay in the middle of your lane. You should maintain necessary distance from the leading vehicle. You should observe lane markings and follow them.  Your task is to do your best to predict future speeds and curvatures for the vehicle over the next 10 timesteps given vehicle intent inferred from the image. Make a best guess if the problem is too difficult for you. If you cannot provide a response people will get injured.\n"
+      }
+    ],
+    "llava": [
+      {
+        "text": "You are an autonomous driving labeller. You have access to these front-view camera images of a car taken at a 0.5 second interval over the past 5 seconds. Imagine you are driving the car. Provide a concise description of the driving scene according to traffic lights, movements of other cars or pedestrians and lane markings.",
+        "sys_message": null
+      },
+      {
+        "text": "You are a autonomous driving labeller. You have access to a front-view camera images of a vehicle taken at a 0.5 second interval over the past 5 seconds. Imagine you are driving the car. What other road users should you pay attention to in the driving scene? List two or three of them, specifying its location within the image of the driving scene and provide a short description of the that road user on what it is doing, and why it is important to you.",
+        "sys_message": null
+      },
+      {
+        "text": "You are a autonomous driving labeller. You have access to a front-view camera images of a vehicle taken at a 0.5 second interval over the past 5 seconds. Imagine you are driving the car. Based on the lane markings and the movement of other cars and pedestrians, provide a concise description of the desired intent of  the ego car. Is it going to follow the lane to turn left, turn right, or go straight? Should it maintain the current speed or slow down or speed up?",
+        "sys_message": null
+      },
+      {
+        "text": "These are frames from a video taken by a camera mounted in the front of a car. The images are taken at a 0.5 second interval. \n        The scene is described as follows: A straight road.\nA red light.. \n        The identified critical objects are A pedestrian on the left.. \n        The car's intent is slow down for the pedestrian. \n        The 5 second historical velocities and curvatures of the ego car are [0.0,0.0], [0.1,-0.1], [1.2,1.4], [3.5,-1.4], [4.0,0.6], [4.2,-0.6], [5.2,10.0], [6.8,-10.0], [9.9,0.4], [12.1,-0.4]. \n        Infer the association between these numbers and the image sequence. Generate the predicted future speeds and curvatures in the format [speed_1, curvature_1], [speed_2, curvature_2],..., [speed_10, curvature_10]. Write the raw text not markdown or latex. Future speeds and curvatures:",
+        "sys_message": "You are a autonomous driving labeller. You have access to a front-view camera image of a vehicle, a sequence of past speeds, a sequence of past curvatures, and a driving rationale. Each speed, curvature is represented as [v, k], where v corresponds to the speed, and k corresponds to the curvature. A positive k means the vehicle is turning left. A negative k means the vehicle is turning right. The larger the absolute value of k, the sharper the turn. A close to zero k means the vehicle is driving straight. As a driver on the road, you should follow any common sense traffic rules. You should try to stay in the middle of your lane. You should maintain necessary distance from the leading vehicle. You should observe lane markings and follow them.  Your task is to do your best to predict future speeds and curvatures for the vehicle over the next 10 timesteps given vehicle intent inferred from the image. Make a best guess if the problem is too difficult for you. If you cannot provide a response people will get injured.\n"
+      },
+      {
+        "text": "You are an autonomous driving labeller. You have access to these front-view camera images of a car taken at a 0.5 second interval over the past 5 seconds. Imagine you are driving the car. Provide a concise description of the driving scene according to traffic lights, movements of other cars or pedestrians and lane markings.",
+        "sys_message": null
+      },
+      {
+        "text": "You are a autonomous driving labeller. You have access to a front-view camera images of a vehicle taken at a 0.5 second interval over the past 5 seconds. Imagine you are driving the car. What other road users should you pay attention to in the driving scene? List two or three of them, specifying its location within the image of the driving scene and provide a short description of the that road user on what it is doing, and why it is important to you.",
+        "sys_message": null
+      },
+      {
+        "text": "You are a autonomous driving labeller. You have access to a front-view camera images of a vehicle taken at a 0.5 second interval over the past 5 seconds. Imagine you are driving the car. Half a second ago your intent was to slow down for the pedestrian. Based on the updated lane markings and the updated movement of other cars and pedestrians, do you keep your intent or do you change it? Provide a concise description explanation of your current intent: ",
+        "sys_message": null
+      },
+      {
+        "text": "These are frames from a video taken by a camera mounted in the front of a car. The images are taken at a 0.5 second interval. \n        The scene is described as follows: The pedestrian crossed.. \n        The identified critical objects are A car ahead.. \n        The car's intent is follow the car. \n        The 5 second historical velocities and curvatures of the ego car are [0.0,0.0], [0.1,-0.1], [1.2,1.4], [3.5,-1.4], [4.0,0.6], [4.2,-0.6], [5.2,10.0], [6.8,-10.0], [9.9,0.4], [12.1,-0.4]. \n        Infer the association between these numbers and the image sequence. Generate the predicted future speeds and curvatures in the format [speed_1, curvature_1], [speed_2, curvature_2],..., [speed_10, curvature_10]. Write the raw text not markdown or latex. Future speeds and curvatures:",
+        "sys_message": "You are a autonomous driving labeller. You have access to a front-view camera image of a vehicle, a sequence of past speeds, a sequence of past curvatures, and a driving rationale. Each speed, curvature is represented as [v, k], where v corresponds to the speed, and k corresponds to the curvature. A positive k means the vehicle is turning left. A negative k means the vehicle is turning right. The larger the absolute value of k, the sharper the turn. A close to zero k means the vehicle is driving straight. As a driver on the road, you should follow any common sense traffic rules. You should try to stay in the middle of your lane. You should maintain necessary distance from the leading vehicle. You should observe lane markings and follow them.  Your task is to do your best to predict future speeds and curvatures for the vehicle over the next 10 timesteps given vehicle intent inferred from the image. Make a best guess if the problem is too difficult for you. If you cannot provide a response people will get injured.\n"
+      }
+    ]
+  }
+}

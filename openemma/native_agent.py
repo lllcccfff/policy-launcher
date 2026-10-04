@@ -75,12 +75,6 @@ class OpenEMMANativeAgent:
         )
         history_seconds = len(history) * self.motion_dt
 
-        scene_description = self._scene_description(images)
-        object_description = self._object_description(images)
-        intent_description = self._intent_description(images, navigation_hint)
-        self._prev_intent = intent_description
-        self._prev_navigation_hint = navigation_hint
-
         sys_message = (
             "You are a autonomous driving labeller. You have access to a front-view camera image of a vehicle, "
             "a sequence of past speeds, a sequence of past curvatures, and a driving rationale. "
@@ -94,22 +88,37 @@ class OpenEMMANativeAgent:
             "inferred from the image. Make a best guess if the problem is too difficult for you. "
             "If you cannot provide a response people will get injured.\n"
         )
-        prompt = (
-            "These are frames from a video taken by a camera mounted in the front of a car. "
-            f"The images are taken at a {self.motion_dt:g} second interval. \n"
-            f"        The scene is described as follows: {scene_description}. \n"
-            f"        The identified critical objects are {object_description}. \n"
-            f"        The car's intent is {intent_description}. \n"
-            f"        The {history_seconds:g} second historical velocities and curvatures of the ego car are "
-            f"{speed_curvature_prompt}. \n"
-            "        Infer the association between these numbers and the image sequence. "
-            "Generate the predicted future speeds and curvatures in the format "
-            "[speed_1, curvature_1], [speed_2, curvature_2],..., [speed_10, curvature_10]. "
-            "Write the raw text not markdown or latex. Future speeds and curvatures:"
-        )
-
         for attempt in range(1, 4):
-            response = self.vlm.infer(prompt, images, sys_message=sys_message)
+            scene_description = self._scene_description(images)
+            object_description = self._object_description(images)
+            intent_description = self._intent_description(images, navigation_hint)
+            self._prev_intent = intent_description
+            self._prev_navigation_hint = navigation_hint
+
+            prompt = (
+                "These are frames from a video taken by a camera mounted in the front of a car. "
+                f"The images are taken at a {self.motion_dt:g} second interval. \n"
+                f"        The scene is described as follows: {scene_description}. \n"
+                f"        The identified critical objects are {object_description}. \n"
+                f"        The car's intent is {intent_description}. \n"
+                f"        The {history_seconds:g} second historical velocities and curvatures of the ego car are "
+                f"{speed_curvature_prompt}. \n"
+                "        Infer the association between these numbers and the image sequence. "
+                "Generate the predicted future speeds and curvatures in the format "
+                "[speed_1, curvature_1], [speed_2, curvature_2],..., [speed_10, curvature_10]. "
+                "Write the raw text not markdown or latex. Future speeds and curvatures:"
+            )
+
+            for generation_attempt in range(1, 4):
+                response = self.vlm.infer(prompt, images, sys_message=sys_message)
+                if "unable" not in response and "sorry" not in response and "[" in response:
+                    break
+                if generation_attempt < 3:
+                    print(
+                        f"[OpenEMMA generation retry] scene={self._scene_token} "
+                        f"motion_attempt={attempt}/3 generation_attempt={generation_attempt}/3 "
+                        f"response={response!r}", flush=True,
+                    )
             try:
                 speed_curvature = parse_speed_curvature(response)
             except ValueError as exc:

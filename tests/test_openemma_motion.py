@@ -77,6 +77,29 @@ class OpenEmmaMotionTest(unittest.TestCase):
         self.assertEqual(len(agent._history), 10)
         self.assertEqual(agent._prev_intent, "keep straight")
 
+    def test_original_outer_retry_refreshes_context_after_three_missing_predictions(self):
+        invalid = FIXTURE["invalid_object_description"]
+        vlm = SimpleNamespace(backend="llama", infer=Mock(side_effect=[
+            "first scene", "first objects", "keep straight", invalid, invalid, invalid,
+            "updated scene", "updated objects", "keep straight", RAW_PREDICTION,
+        ]))
+        with patch("rl_framework.openemma.native_agent.OpenEMMAOfficialVLM", return_value=vlm):
+            agent = OpenEMMANativeAgentLlama()
+        for step in range(10):
+            trajectory = agent.predict_action({"FRONT": np.zeros((8, 8, 3), dtype=np.uint8)}, {
+                "scene_token": "0001", "ego_pos": [2.0 * step, 0.0], "ego_velo": 4.0,
+                "heading_theta": 0.0, "command": 2,
+            })
+        self.assertEqual(vlm.infer.call_count, 10)
+        calls = vlm.infer.call_args_list
+        self.assertEqual(calls[3], calls[4])
+        self.assertEqual(calls[4], calls[5])
+        self.assertIn("updated scene", calls[9].args[0])
+        self.assertIn("updated objects", calls[9].args[0])
+        self.assertEqual(calls[3].args[1], calls[9].args[1])
+        self.assertEqual(len(agent._history), 10)
+        np.testing.assert_allclose(trajectory[:, 0], np.arange(1, 11) * 2.0)
+
 
 if __name__ == "__main__":
     unittest.main()

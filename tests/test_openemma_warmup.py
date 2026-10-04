@@ -74,14 +74,15 @@ class OpenEmmaWarmupTest(unittest.TestCase):
 
     def test_invalid_motion_response_raises(self):
         vlm = SimpleNamespace(backend="llama", infer=Mock(side_effect=[
-            "scene", "objects", "intent", "no numeric prediction",
+            "scene", "objects", "intent", *(["no numeric prediction"] * 3),
         ]))
         with patch("rl_framework.openemma.native_agent.OpenEMMAOfficialVLM", return_value=vlm):
             agent = OpenEMMANativeAgentLlama()
         for step in range(9):
             agent.predict_action(*self.observation(step))
-        with self.assertRaisesRegex(ValueError, "did not contain speed-curvature pairs"):
+        with self.assertRaisesRegex(ValueError, "after 3 attempts"):
             agent.predict_action(*self.observation(9))
+        self.assertEqual(vlm.infer.call_count, 6)
 
     def test_stationary_history_raises_before_inference(self):
         vlm = SimpleNamespace(backend="qwen", infer=Mock())

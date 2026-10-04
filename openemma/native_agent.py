@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from collections import deque
 from typing import Any, Deque, Dict, Sequence, Tuple
 
@@ -11,6 +10,7 @@ from rl_framework.openemma.dataparser import (
     OpenEMMAHistoryFrame,
     history_frame_from_observation,
     integrate_speed_curvature,
+    parse_speed_curvature,
 )
 
 
@@ -19,8 +19,6 @@ class OpenEMMANativeAgent:
 
     # Based on taco-group/openemma main.py at 8403ea636696c5c10e8fdeca566410de0a07e449,
     # with navigation hints and timing from the configured observation interval.
-    _PAIR_RE = re.compile(r"\[([-+]?\d*\.?\d+),\s*([-+]?\d*\.?\d+)\]")
-
     def __init__(
         self,
         *,
@@ -110,13 +108,21 @@ class OpenEMMANativeAgent:
             "Write the raw text not markdown or latex. Future speeds and curvatures:"
         )
 
-        response = self.vlm.infer(prompt, images, sys_message=sys_message)
-        pairs = self._PAIR_RE.findall(response.replace("Future speeds and curvatures:", ""))
-        if not pairs:
-            raise ValueError(f"OpenEMMA response did not contain speed-curvature pairs: {response!r}")
-        speed_curvature = np.asarray([[float(v), float(k)] for v, k in pairs], dtype=np.float32)[:10]
-        speed_curvature[:, 1] /= 100.0
-        return integrate_speed_curvature(speed_curvature, dt=self.prediction_dt)
+        for attempt in range(1, 4):
+            response = self.vlm.infer(prompt, images, sys_message=sys_message)
+            try:
+                speed_curvature = parse_speed_curvature(response)
+            except ValueError as exc:
+                if attempt == 3:
+                    raise ValueError(
+                        f"OpenEMMA failed to generate a valid trajectory after 3 attempts: {response!r}"
+                    ) from exc
+                print(
+                    f"[OpenEMMA retry] scene={self._scene_token} attempt={attempt}/3 "
+                    f"reason={exc} response={response!r}", flush=True,
+                )
+            else:
+                return integrate_speed_curvature(speed_curvature, dt=self.prediction_dt)
 
     def _scene_description(self, images: Sequence[str]) -> str:
         history_seconds = len(self._history) * self.motion_dt

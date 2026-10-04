@@ -180,12 +180,8 @@ class OpenEMMAOfficialVLM:
             return_tensors="pt",
         ).to(self._model.device)
         output = self._model.generate(**inputs, max_new_tokens=2048)
-        output_text = self._processor.decode(output[0])
-        return re.findall(
-            r"<\|start_header_id\|>assistant<\|end_header_id\|>(.*?)<\|eot_id\|>",
-            output_text,
-            re.DOTALL,
-        )[0].strip()
+        generated_ids = output[0, inputs["input_ids"].shape[-1] :]
+        return self._processor.decode(generated_ids, skip_special_tokens=True).strip()
 
     def _infer_llava(self, prompt: str, image_base64s: Sequence[str]) -> str:
         import torch

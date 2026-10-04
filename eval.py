@@ -58,7 +58,7 @@ def route_agent(model_name: str, device: str):
 def main() -> int:
     args = parse_args()
 
-    from metadrive.envs.grpc_client_env import GrpcClientEnv
+    from streetworld.envs.grpc_client_env import GrpcClientEnv
 
     agent = route_agent(args.model, args.device)
     env = GrpcClientEnv(host=args.host, port=args.port, timeout_sec=args.timeout, auto_wait_ready=True)

@@ -7,7 +7,7 @@
 从 StreetWorld 仓库根目录执行，先启动仿真服务并选定场景：
 
 ```bash
-python -m metadrive.examples.env_server_easydrive --host 127.0.0.1 --port 50052 --max-workers 1
+python -m streetworld.examples.env_server_easydrive --host 127.0.0.1 --port 50052 --max-workers 1
 ```
 
 在对应模型的 Python 环境中运行：

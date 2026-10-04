@@ -34,13 +34,13 @@ python -m pip check
 
 ```bash
 conda activate 3dv
-CUDA_VISIBLE_DEVICES=0 python -m metadrive.examples.env_server_easydrive \
+CUDA_VISIBLE_DEVICES=0 python -m streetworld.examples.env_server_easydrive \
   --ad-policy-config opendrivevla --host 127.0.0.1 --port 50053 \
   --web-port 18083 --max-workers 1 \
   --video-output-dir outputs_benchmark/opendrivevla/videos
 ```
 
-也可以通过 `metadrive.examples.env_server_scene_config` 的 `--scene-config` 参数指定每行一个场景编号的文本文件，并传入 `--dataset nuscenes`。
+也可以通过 `streetworld.examples.env_server_scene_config` 的 `--scene-config` 参数指定每行一个场景编号的文本文件，并传入 `--dataset nuscenes`。
 
 ## 运行 eval
 

@@ -26,6 +26,8 @@ class OpenEmmaMotionTest(unittest.TestCase):
         for response in [
             RAW_PREDICTION,
             ",\n".join(["[ 4.0 , -0.0 ]"] * 10),
+            RAW_PREDICTION + "\n\nNote: The future speeds and curvatures are based on the assumption "
+            "that the car maintains its current speed and direction.",
             "The predicted future speeds and curvatures are: " + RAW_PREDICTION
             + ". The future speeds and curvatures remain constant.",
         ]:
@@ -45,6 +47,7 @@ class OpenEmmaMotionTest(unittest.TestCase):
             FIXTURE["invalid_object_description"],
             "Historical speeds and curvatures: " + RAW_PREDICTION,
             RAW_PREDICTION + ", " + RAW_PREDICTION,
+            RAW_PREDICTION + "\nHistorical speeds and curvatures: [4.0, 0.0]",
             "Future speeds and curvatures: " + RAW_PREDICTION + ", [4.0, 0.0]",
             "Future speeds and curvatures: " + RAW_PREDICTION
             + "\nAlternative future speeds and curvatures: " + RAW_PREDICTION,

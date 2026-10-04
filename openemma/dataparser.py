@@ -13,7 +13,7 @@ _PAIR_RE = re.compile(r"\[\s*([-+]?\d*\.?\d+)\s*,\s*([-+]?\d*\.?\d+)\s*\]")
 
 
 def parse_speed_curvature(response: str) -> np.ndarray:
-    """Read ten future pairs, excluding prose and any echoed historical pairs."""
+    """Read future pairs, excluding prose and any echoed historical pairs."""
     sections = re.split(r"\bfuture speeds and curvatures\b", response, flags=re.IGNORECASE)
     if len(sections) == 1:
         # Without a prediction heading, only the requested raw numeric list is unambiguous.
@@ -23,8 +23,8 @@ def parse_speed_curvature(response: str) -> np.ndarray:
         sections = sections[1:]
     groups = [_PAIR_RE.findall(section) for section in sections]
     groups = [pairs for pairs in groups if pairs]
-    if len(groups) != 1 or len(groups[0]) != 10:
-        raise ValueError(f"Expected exactly one prediction of 10 pairs, got {[len(pairs) for pairs in groups]}")
+    if len(groups) != 1 or len(groups[0]) > 10:
+        raise ValueError(f"Expected one prediction containing 1 to 10 pairs, got {[len(pairs) for pairs in groups]}")
     values = np.asarray(groups[0], dtype=np.float32)
     if not np.isfinite(values).all():
         raise ValueError("Predicted speeds and curvatures must be finite")

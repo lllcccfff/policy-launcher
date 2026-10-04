@@ -32,12 +32,19 @@ class OpenEmmaMotionTest(unittest.TestCase):
             with self.subTest(response=response):
                 np.testing.assert_array_equal(parse_speed_curvature(response), [[4.0, 0.0]] * 10)
 
-    def test_missing_incomplete_and_ambiguous_predictions_are_rejected(self):
+    def test_short_predictions_preserve_the_original_variable_horizon(self):
+        for count in (1, 8, 9):
+            response = "Predicted future speeds and curvatures:\n" + "\n".join(
+                f"{i + 1}. [4.0, 0.0]" for i in range(count)
+            )
+            with self.subTest(count=count):
+                np.testing.assert_array_equal(parse_speed_curvature(response), [[4.0, 0.0]] * count)
+
+    def test_missing_and_ambiguous_predictions_are_rejected(self):
         invalid = [
             FIXTURE["invalid_object_description"],
             "Historical speeds and curvatures: " + RAW_PREDICTION,
             RAW_PREDICTION + ", " + RAW_PREDICTION,
-            "Future speeds and curvatures: " + ", ".join(["[4.0, 0.0]"] * 9),
             "Future speeds and curvatures: " + RAW_PREDICTION + ", [4.0, 0.0]",
             "Future speeds and curvatures: " + RAW_PREDICTION
             + "\nAlternative future speeds and curvatures: " + RAW_PREDICTION,

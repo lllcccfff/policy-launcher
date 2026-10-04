@@ -138,6 +138,86 @@
           -0.7
         ]
       ]
+    },
+    {
+      "name": "qwen_short_prediction",
+      "response": "Based on the historical velocities and curvatures provided, the predicted future speeds and curvatures for the next 10 seconds can be inferred as follows:\n\n1. [5.0, 1.5]\n2. [5.2, 1.0]\n3. [5.5, 0.5]\n4. [5.8, 0.0]\n5. [6.0, -0.5]\n6. [6.2, -1.0]\n7. [6.4, -1.5]\n8. [6.6, -2.0]\n",
+      "future_pairs": [
+        [
+          5.0,
+          1.5
+        ],
+        [
+          5.2,
+          1.0
+        ],
+        [
+          5.5,
+          0.5
+        ],
+        [
+          5.8,
+          0.0
+        ],
+        [
+          6.0,
+          -0.5
+        ],
+        [
+          6.2,
+          -1.0
+        ],
+        [
+          6.4,
+          -1.5
+        ],
+        [
+          6.6,
+          -2.0
+        ]
+      ]
+    },
+    {
+      "name": "llava_short_prediction",
+      "response": "The image sequence shows the car driving on a road with a lane marking visible on the right side of the image. The car appears to be maintaining a consistent speed and following the curvature of the road. Based on the historical velocities and curvatures provided, we can infer that the car's speed has been relatively stable, with a slight increase in speed over the past 5 seconds. The curvature of the road has also been relatively consistent, with a slight increase in curvature over the past 5 seconds.\n\nPredicted future speeds and curvatures:\n[4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.7], [4.7,5.3], [4.9,2.4], [5.0,1.5], [5.2,0.5], [4.4,3.7]\n\nNote: The predicted future speeds and curvatures are based on the historical velocities and curvatures provided and assume that the car continues to maintain a consistent speed and follow the curvature of the road.",
+      "future_pairs": [
+        [
+          4.9,
+          2.4
+        ],
+        [
+          5.0,
+          1.5
+        ],
+        [
+          5.2,
+          0.5
+        ],
+        [
+          4.4,
+          3.7
+        ],
+        [
+          4.7,
+          5.3
+        ],
+        [
+          4.9,
+          2.4
+        ],
+        [
+          5.0,
+          1.5
+        ],
+        [
+          5.2,
+          0.5
+        ],
+        [
+          4.4,
+          3.7
+        ]
+      ]
     }
   ],
   "invalid_object_description": "The identified critical objects are:\n\n1. **Truck in the left lane**: The truck is located in the left lane, about 10 meters ahead of me. It appears to be stationary, possibly stopped at a red light or waiting to turn. I should pay attention to the truck because it may suddenly move forward or turn into my lane, which could pose a risk to my safety. I should also be aware of the truck's size and position in the lane, as it may block my view of oncoming traffic or pedestrians.\n\n2. **Pedestrian on the sidewalk**: The pedestrian is located on the sidewalk to the right of the image, about 5 meters away from the curb. They appear to be walking towards the crosswalk. I should pay attention to the pedestrian because they may step off the curb and into the road, which could put them in harm's way. I should also be aware of their speed and direction, as they may be approaching the crosswalk quickly or unexpectedly.\n\n3. **Car in the distance**: The car is located in the distance, about 50 meters away from me. It appears to be traveling in the same direction as me, but at a slower speed. I should pay attention to the car because it may be approaching a stop or slow down suddenly, which could affect my own trajectory. I should also be aware of the car's position in relation to me, as it may be in my blind spot or approaching from an unexpected angle.\n\nThese road users are important to pay attention to because they may pose a risk to my safety or affect my ability to navigate the road safely. By monitoring their movements and positions, I can adjust my driving accordingly to avoid potential hazards and ensure a safe journey."

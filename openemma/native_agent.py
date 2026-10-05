@@ -223,10 +223,13 @@ class OpenEMMANativeAgent:
         headings = np.unwrap(np.asarray([frame.heading_theta for frame in history], dtype=np.float32))
         segment_distances = np.linalg.norm(np.diff(motion_points[:, :2], axis=0), axis=1)
         center_distances = segment_distances[:-1] + segment_distances[1:]
-        if np.any(center_distances <= 0.0):
-            raise ValueError(f"Cannot estimate curvature with zero-distance motion segments: {center_distances}")
         curvatures = np.zeros(motion_points.shape[0], dtype=np.float32)
-        curvatures[1:-1] = (headings[2:] - headings[:-2]) / center_distances
+        np.divide(
+            headings[2:] - headings[:-2],
+            center_distances,
+            out=curvatures[1:-1],
+            where=center_distances != 0.0,
+        )
         curvatures[0] = curvatures[1]
         curvatures[-1] = curvatures[-2]
         return speeds, curvatures

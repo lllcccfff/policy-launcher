@@ -9,6 +9,7 @@ from policy_launcher.openemma.native_agent import (
     OpenEMMANativeAgentLLaVA,
     OpenEMMANativeAgentQwen,
 )
+from policy_launcher.openemma.dataparser import OpenEMMAHistoryFrame
 
 
 class OpenEmmaWarmupTest(unittest.TestCase):
@@ -84,15 +85,54 @@ class OpenEmmaWarmupTest(unittest.TestCase):
             agent.predict_action(*self.observation(9))
         self.assertEqual(vlm.infer.call_count, 18)
 
-    def test_stationary_history_raises_before_inference(self):
-        vlm = SimpleNamespace(backend="qwen", infer=Mock())
-        with patch("policy_launcher.openemma.native_agent.OpenEMMAOfficialVLM", return_value=vlm):
+    def test_all_benchmark_backends_infer_with_stationary_history(self):
+        for agent_class, backend in [
+            (OpenEMMANativeAgentLlama, "llama"),
+            (OpenEMMANativeAgentQwen, "qwen"),
+            (OpenEMMANativeAgentLLaVA, "llava"),
+        ]:
+            with self.subTest(backend=backend):
+                vlm = SimpleNamespace(backend=backend, infer=Mock(return_value=", ".join(["[0.0,0.0]"] * 10)))
+                with patch("policy_launcher.openemma.native_agent.OpenEMMAOfficialVLM", return_value=vlm):
+                    agent = agent_class()
+                with np.errstate(divide="raise", invalid="raise"):
+                    for step in range(10):
+                        obs_img, obs_info = self.observation(0)
+                        obs_info["ego_velo"] = 0.0
+                        obs_info["heading_theta"] = 0.01 * step
+                        trajectory = agent.predict_action(obs_img, obs_info)
+                        self.assertEqual(vlm.infer.call_count, 0 if step < 9 else 4)
+                prompt = vlm.infer.call_args.args[0]
+                self.assertIn(
+                    "historical velocities and curvatures of the ego car are " + ", ".join(["[0.0,0.0]"] * 10),
+                    prompt,
+                )
+                np.testing.assert_array_equal(trajectory, np.zeros((10, 2), dtype=np.float32))
+
+    def test_mixed_stationary_and_moving_history_preserves_moving_curvature(self):
+        positions = [0, 0, 0, 1, 2, 2, 2, 2, 3, 4]
+        speeds = [0, 0, 0, 2, 2, 0, 0, 0, 2, 2]
+        history = [
+            OpenEMMAHistoryFrame("", np.asarray([x, 0], dtype=np.float32), i * 0.1, speed)
+            for i, (x, speed) in enumerate(zip(positions, speeds))
+        ]
+        with patch("policy_launcher.openemma.native_agent.OpenEMMAOfficialVLM"):
             agent = OpenEMMANativeAgentQwen()
-        for _ in range(9):
-            agent.predict_action(*self.observation(0))
-        with self.assertRaisesRegex(ValueError, "zero-distance motion segments"):
-            agent.predict_action(*self.observation(0))
-        vlm.infer.assert_not_called()
+        with np.errstate(divide="raise", invalid="raise"):
+            actual_speeds, curvatures = agent._history_speed_curvature(history)
+        np.testing.assert_array_equal(actual_speeds, speeds)
+        np.testing.assert_allclose(curvatures, [0, 0, 0.2, 0.1, 0.2, 0, 0, 0.2, 0.1, 0.1], rtol=1e-5)
+
+    def test_small_nonzero_motion_still_uses_measured_distance(self):
+        history = [
+            OpenEMMAHistoryFrame("", np.asarray([i * 1e-8, 0], dtype=np.float32), i * 1e-9, 1e-8)
+            for i in range(10)
+        ]
+        with patch("policy_launcher.openemma.native_agent.OpenEMMAOfficialVLM"):
+            agent = OpenEMMANativeAgentQwen()
+        with np.errstate(divide="raise", invalid="raise"):
+            _, curvatures = agent._history_speed_curvature(history)
+        np.testing.assert_allclose(curvatures, 0.1, rtol=1e-5)
 
 
 if __name__ == "__main__":

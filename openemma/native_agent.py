@@ -42,6 +42,7 @@ class OpenEMMANativeAgent:
         self._history.clear()
         self._prev_intent: str | None = None
         self._prev_navigation_hint: str | None = None
+        self._prev_trajectory: np.ndarray | None = None
         self._scene_token: str | None = None
 
     def predict_action(self, obs_img: Dict[str, Any], obs_info: Dict[str, Any]) -> np.ndarray:
@@ -122,6 +123,8 @@ class OpenEMMANativeAgent:
             try:
                 speed_curvature = parse_speed_curvature(response)
             except ValueError as exc:
+                if self._prev_trajectory is not None:
+                    return self._prev_trajectory.copy()
                 if attempt == 3:
                     raise ValueError(
                         f"OpenEMMA failed to generate a valid trajectory after 3 attempts: {response!r}"
@@ -131,7 +134,8 @@ class OpenEMMANativeAgent:
                     f"reason={exc} response={response!r}", flush=True,
                 )
             else:
-                return integrate_speed_curvature(speed_curvature, dt=self.prediction_dt)
+                self._prev_trajectory = integrate_speed_curvature(speed_curvature, dt=self.prediction_dt)
+                return self._prev_trajectory.copy()
 
     def _scene_description(self, images: Sequence[str]) -> str:
         history_seconds = len(self._history) * self.motion_dt

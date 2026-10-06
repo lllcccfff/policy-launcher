@@ -168,6 +168,68 @@ class OpenEmmaMotionTest(unittest.TestCase):
                     agent.predict_action(*observation)
         self.assertEqual(vlm.infer.call_count, 22)
 
+    def test_single_point_output_reuses_valid_variable_length_trajectory_for_each_backend(self):
+        for agent_class, backend in (
+            (OpenEMMANativeAgentLlama, "llama"),
+            (OpenEMMANativeAgentQwen, "qwen"),
+            (OpenEMMANativeAgentLLaVA, "llava"),
+        ):
+            for count in (2, 8, 9, 10):
+                with self.subTest(backend=backend, count=count):
+                    vlm = SimpleNamespace(backend=backend, infer=Mock(side_effect=[
+                        "scene", "objects", "keep straight", ", ".join(["[4.0, 0.0]"] * count),
+                        "scene", "objects", "keep straight", "[2.0, 0.0]",
+                        "scene", "objects", "keep straight", "[1.0, 0.0]",
+                    ]))
+                    with patch("policy_launcher.openemma.native_agent.OpenEMMAOfficialVLM", return_value=vlm):
+                        agent = agent_class()
+                    for step in range(10):
+                        trajectory = agent.predict_action({"FRONT": np.zeros((8, 8, 3), dtype=np.uint8)}, {
+                            "scene_token": "0001", "ego_pos": [2.0 * step, 0.0], "ego_velo": 4.0,
+                            "heading_theta": 0.0, "command": 2,
+                        })
+                    self.assertEqual(trajectory.shape, (count, 2))
+                    expected = trajectory.copy()
+                    trajectory[:] = -100.0
+                    for step in (10, 11):
+                        reused = agent.predict_action({"FRONT": np.zeros((8, 8, 3), dtype=np.uint8)}, {
+                            "scene_token": "0001", "ego_pos": [2.0 * step, 0.0], "ego_velo": 4.0,
+                            "heading_theta": 0.0, "command": 2,
+                        })
+                        np.testing.assert_array_equal(reused, expected)
+                        reused[:] = -200.0
+                    self.assertEqual(vlm.infer.call_count, 12)
+
+    def test_first_single_point_output_in_new_scene_retries_without_old_scene_cache(self):
+        for responses in (("[4.0, 0.0]", "[4.0, 0.0], [4.0, 0.0]"), ("[4.0, 0.0]",) * 3):
+            with self.subTest(responses=responses):
+                calls = ["scene", "objects", "keep straight", RAW_PREDICTION]
+                for response in responses:
+                    calls.extend(["scene", "objects", "keep straight", response])
+                vlm = SimpleNamespace(backend="qwen", infer=Mock(side_effect=calls))
+                with patch("policy_launcher.openemma.native_agent.OpenEMMAOfficialVLM", return_value=vlm):
+                    agent = OpenEMMANativeAgentQwen()
+                for scene in ("0001", "0002"):
+                    for step in range(9):
+                        agent.predict_action({"FRONT": np.zeros((8, 8, 3), dtype=np.uint8)}, {
+                            "scene_token": scene, "ego_pos": [2.0 * step, 0.0], "ego_velo": 4.0,
+                            "heading_theta": 0.0, "command": 2,
+                        })
+                    observation = ({"FRONT": np.zeros((8, 8, 3), dtype=np.uint8)}, {
+                        "scene_token": scene, "ego_pos": [18.0, 0.0], "ego_velo": 4.0,
+                        "heading_theta": 0.0, "command": 2,
+                    })
+                    if scene == "0001":
+                        agent.predict_action(*observation)
+                    elif len(responses) == 2:
+                        trajectory = agent.predict_action(*observation)
+                        np.testing.assert_array_equal(trajectory, [[2.0, 0.0], [4.0, 0.0]])
+                    else:
+                        with self.assertRaisesRegex(ValueError, "after 3 attempts"):
+                            agent.predict_action(*observation)
+                        self.assertIsNone(agent._prev_trajectory)
+                self.assertEqual(vlm.infer.call_count, 4 + 4 * len(responses))
+
 
 if __name__ == "__main__":
     unittest.main()

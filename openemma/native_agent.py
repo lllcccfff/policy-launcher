@@ -122,6 +122,10 @@ class OpenEMMANativeAgent:
                     )
             try:
                 speed_curvature = parse_speed_curvature(response)
+                if len(speed_curvature) < 2:
+                    raise ValueError(
+                        f"OpenEMMA trajectory needs at least two future points, got {len(speed_curvature)}"
+                    )
             except ValueError as exc:
                 if self._prev_trajectory is not None:
                     return self._prev_trajectory.copy()

@@ -151,7 +151,7 @@ class OpenEMMAOfficialVLM:
             padding=True,
             return_tensors="pt",
         ).to(self._model.device)
-        generated_ids = self._model.generate(**inputs, max_new_tokens=128)
+        generated_ids = self._model.generate(**inputs, max_new_tokens=2048)
         generated_ids_trimmed = [
             output_ids[len(input_ids) :] for input_ids, output_ids in zip(inputs.input_ids, generated_ids)
         ]

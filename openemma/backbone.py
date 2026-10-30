@@ -75,7 +75,12 @@ class OpenEMMAOfficialVLM:
         self._model = MllamaForConditionalGeneration.from_pretrained(
             self.model_id,
             torch_dtype=torch.bfloat16,
-            device_map="auto",
+            device_map="sequential",
+            # Leave room for vision inference and the simulator sharing these GPUs.
+            max_memory={
+                i: torch.cuda.mem_get_info(i)[0] - 4 * 1024**3
+                for i in range(torch.cuda.device_count())
+            },
         )
         self._processor = AutoProcessor.from_pretrained(self.model_id)
 

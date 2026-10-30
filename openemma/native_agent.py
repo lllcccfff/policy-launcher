@@ -26,7 +26,6 @@ class OpenEMMANativeAgent:
         model_id: str | None = None,
         prediction_dt: float = 0.5,
         camera: str = "FRONT",
-        warmup_action: Tuple[float, float] = (0.0, 0.0),
     ):
         self.model = model
         self.vlm = OpenEMMAOfficialVLM(model, model_id=model_id)
@@ -34,7 +33,6 @@ class OpenEMMANativeAgent:
         self.motion_dt = 0.5
         self.prediction_dt = float(prediction_dt)
         self.camera = camera
-        self.warmup_action = (float(warmup_action[0]), float(warmup_action[1]))
         self._history: Deque[OpenEMMAHistoryFrame] = deque(maxlen=self.history_len)
         self.reset()
 
@@ -45,7 +43,7 @@ class OpenEMMANativeAgent:
         self._prev_trajectory: np.ndarray | None = None
         self._scene_token: str | None = None
 
-    def predict_action(self, obs_img: Dict[str, Any], obs_info: Dict[str, Any]) -> np.ndarray:
+    def predict_action(self, obs_img: Dict[str, Any], obs_info: Dict[str, Any]) -> np.ndarray | None:
         scene_token = str(obs_info["scene_token"])
         if scene_token != self._scene_token:
             self.reset()
@@ -53,7 +51,8 @@ class OpenEMMANativeAgent:
 
         self._history.append(history_frame_from_observation(obs_img, obs_info, camera=self.camera))
         if len(self._history) < self.history_len:
-            return np.asarray(self.warmup_action, dtype=np.float32).reshape(1, 2)
+            # No trajectory is available while the observation history fills.
+            return None
 
         if self._prev_intent is None:
             print(
